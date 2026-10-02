@@ -86,7 +86,7 @@ jobs:
       # ── Rust setup ─────────────────────────────────────────────────
       - name: Setup Rust
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'rust'
-        uses: dtolnay/rust-toolchain@1.85.0
+        uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: rustfmt, clippy
 
