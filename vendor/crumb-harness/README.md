@@ -4,8 +4,8 @@ This directory contains an unchanged source snapshot of the native Crumb
 agent harness used by OreoPI.
 
 - Upstream: <https://github.com/elixpo/crumb.elixpo>
-- Commit: `19dc32313e57b3cfed82f430f81343cf519ac78f`
-- Review: <https://github.com/elixpo/crumb.elixpo/pull/71>
+- Commit: `5e5b517ac5fb5ce9360b164db2fc9b62247f2fda`
+- Work item: <https://github.com/elixpo/crumb.elixpo/issues/70>
 - Imported: 2026-10-02
 - Included crates: `crumb-agent`, `crumb-harness`, `crumb-llm`, and
   `crumb-pollinations`
