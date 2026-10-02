@@ -1,0 +1,8 @@
+/target/
+/.elixpo/
+*.log
+*.wav
+.env
+.env.*
+!.env.example
+

@@ -1,0 +1,16 @@
+[package]
+name = "elixpo-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+oreo-core = { path = "../../crates/oreo-core" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "elixpo"
+path = "src/main.rs"
+
