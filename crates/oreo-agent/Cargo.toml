@@ -1,0 +1,20 @@
+[package]
+name = "oreo-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+crumb-agent = { path = "../../vendor/crumb-harness/upstream/crates/crumb-agent" }
+crumb-harness = { path = "../../vendor/crumb-harness/upstream/crates/crumb-harness" }
+crumb-llm = { path = "../../vendor/crumb-harness/upstream/crates/crumb-llm" }
+crumb-pollinations = { path = "../../vendor/crumb-harness/upstream/crates/crumb-pollinations" }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

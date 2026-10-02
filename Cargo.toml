@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/elixpo-cli",
+    "crates/oreo-agent",
     "crates/oreo-core",
     "vendor/crumb-harness/upstream/crates/crumb-agent",
     "vendor/crumb-harness/upstream/crates/crumb-harness",
