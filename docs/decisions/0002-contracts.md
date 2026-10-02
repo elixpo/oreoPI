@@ -15,6 +15,5 @@ the test surface as real integrations are added.
 ## Consequences
 
 - Laptop and SBC implementations share behaviour.
-- Crumb code is imported through a narrow adapter rather than copied wholesale.
+- The Crumb-derived engine remains behind the narrow `oreo-agent` adapter.
 - Deterministic tests remain available when live services are unavailable.
-

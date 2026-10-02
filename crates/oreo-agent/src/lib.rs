@@ -1,8 +1,9 @@
-//! Oreo-owned boundary around the vendored Crumb native harness.
+//! Oreo-owned boundary around the Crumb-derived native harness engine.
 //!
 //! Applications depend on this crate rather than the vendor directory. The
 //! boundary owns Oreo's profile, session lifecycle, event vocabulary, and
-//! redacted errors while Crumb supplies the provider-neutral execution loop.
+//! redacted errors while the internal engine supplies the provider-neutral
+//! execution loop.
 
 use std::error::Error;
 use std::fmt;
@@ -192,8 +193,8 @@ impl OreoAgent {
         })
     }
 
-    /// Runs one bounded turn through Crumb and translates events into Oreo's
-    /// stable vocabulary.
+    /// Runs one bounded turn through the engine and translates events into
+    /// Oreo's stable vocabulary.
     ///
     /// # Errors
     ///

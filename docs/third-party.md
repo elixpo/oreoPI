@@ -5,4 +5,4 @@ vendored source tree.
 
 | Component | Upstream | Pin | Licence | Purpose | Local changes | Update path |
 |---|---|---|---|---|---|---|
-| Crumb native harness | [elixpo/crumb.elixpo](https://github.com/elixpo/crumb.elixpo) | `5e5b517ac5fb5ce9360b164db2fc9b62247f2fda` | MIT; upstream notices retained | Provider-neutral bounded agent loop, tool policy, model contracts, and Pollinations adapter | None inside the snapshot; Oreo adapts it in `oreo-agent` | Replace from a reviewed upstream commit, regenerate `MANIFEST.sha256`, then run the workspace gates |
+| Crumb native harness fork | [elixpo/crumb.elixpo](https://github.com/elixpo/crumb.elixpo) | Fork point `5e5b517ac5fb5ce9360b164db2fc9b62247f2fda` | MIT / Elixpo notices | Starting point for the provider-neutral agent loop, tool policy, model contracts, and Pollinations adapter | Maintained as Oreo-specific first-party crates under `crates/`; see `docs/upstream/crumb-harness.md` | Review and merge useful upstream patches selectively; never overwrite the Oreo fork wholesale |

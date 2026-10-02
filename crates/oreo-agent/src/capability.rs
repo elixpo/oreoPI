@@ -108,7 +108,7 @@ impl ApprovalUi for DenyApprovalUi {
     }
 }
 
-/// Builds a Crumb tool host and its matching immutable Oreo policy together.
+/// Builds an engine tool host and its matching immutable Oreo policy together.
 pub struct CapabilityRegistry {
     tools: ToolHost,
     capabilities: BTreeMap<String, Capability>,
