@@ -15,7 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: rustsec/audit-check@v2
+      - uses: actions/checkout@v7
+      - name: Install RustSec audit tool
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit@0.22.2
+      - name: Audit Rust dependencies
+        run: cargo audit

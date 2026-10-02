@@ -16,7 +16,7 @@ jobs:
     steps:
       # ── Checkout the calling repo ──────────────────────────────────
       - name: Checkout calling repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # ── Install yq for YAML parsing ───────────────────────────────
       - name: Install yq
@@ -67,7 +67,7 @@ jobs:
       # ── Node.js setup (nextjs) ─────────────────────────────────────
       - name: Setup Node.js
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'nextjs'
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.manifest.outputs.node_version }}
           cache: npm
@@ -79,15 +79,16 @@ jobs:
       # ── Python setup ───────────────────────────────────────────────
       - name: Setup Python
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'python'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
       # ── Rust setup ─────────────────────────────────────────────────
       - name: Setup Rust
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'rust'
-        uses: dtolnay/rust-toolchain@1.85.0
+        uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.85.0
           components: rustfmt, clippy
 
       - name: Cache Rust build

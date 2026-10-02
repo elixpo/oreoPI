@@ -19,6 +19,14 @@ on:
   schedule:
     - cron: "0 9 * * 1"  # Weekly Monday 9 AM UTC — stale cleanup
 
+# Reusable workflows cannot elevate the caller's token. Declare the maximum
+# permissions needed by the PR and stale-management jobs here; the quality job
+# remains read-only in its own workflow.
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 jobs:
   # ── Common CI (no LLM) ──────────────────────────────
 
