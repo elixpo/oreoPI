@@ -125,7 +125,7 @@ jobs:
 
       - name: Upload contracted run receipt
         if: always() && steps.gate.outputs.authorized == 'true'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: repository-agent-${{ github.run_id }}
           path: ${{ runner.temp }}/oreoflow-repository-agent
