@@ -53,7 +53,10 @@ jobs:
           INPUT_REQUEST: ${{ inputs.request }}
           TRUSTED_USERS: ${{ vars.ELIXPO_MENTION_TRUSTED_USERS || 'Circuit-Overtime,anwe-ch,elixpoo,ez-vivek' }}
         with:
-          github-token: ${{ secrets.ELIXPOO_GITHUB_AGENTIC_TOKEN }}
+          # Fork and Dependabot events cannot read organization secrets; the
+          # gate only inspects event metadata, so the scoped workflow token is
+          # sufficient when the agent token is unavailable.
+          github-token: ${{ secrets.ELIXPOO_GITHUB_AGENTIC_TOKEN || github.token }}
           script: |
             const trusted = new Set((process.env.TRUSTED_USERS || '').split(',').map(v => v.trim()).filter(Boolean));
             const event = context.eventName;
