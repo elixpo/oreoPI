@@ -41,3 +41,8 @@ cargo run -p elixpo-cli -- ask "What is running?"
 - Affect changes presentation, never truth, safety, or permissions.
 - Queues, model output, sessions, and tool output are bounded.
 
+## Licence
+
+Source code is provided under the Elixpo licensing standard: MIT with the
+Oreo/Elixpo trademark exception. Brand and visual assets use CC-BY-4.0 with the
+same exception. See [`LICENSE`](LICENSE) and [`LICENSES/NOTICE`](LICENSES/NOTICE).

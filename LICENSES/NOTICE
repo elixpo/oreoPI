@@ -1,0 +1,27 @@
+NOTICE — the Elixpo notice board
+================================
+
+This repository is licensed under the Elixpo License (see ../LICENSE). Read
+this notice together with LICENSE and LICENSES/exceptions/Oreo-trademarks.
+
+REPOSITORY
+----------
+
+  Name:        OreoPI / Elixpo Voice
+  What it is:  The local-first Oreo ambient voice assistant runtime, device
+               software, protocols, tools, tests, and reference integrations.
+
+RESERVED IDENTITY
+-----------------
+
+The official Elixpo and Oreo product names, hosted services, device identities,
+hardware product listings, package namespaces, mascot, E-badge, and visual
+identity remain reserved as described by the Oreo-trademarks exception.
+
+The source code remains reusable under MIT. Forks must use their own product,
+service, hardware, package, and device names and must not imply Elixpo
+endorsement.
+
+No additional source-code restriction is imposed by this notice.
+
+Contact: hello@elixpo.com

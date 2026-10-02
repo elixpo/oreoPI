@@ -1,8 +1,8 @@
 /target/
-/.elixpo/
+/.elixpo/*
+!/.elixpo/project.yml
 *.log
 *.wav
 .env
 .env.*
 !.env.example
-

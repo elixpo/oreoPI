@@ -1,0 +1,18 @@
+project:
+  name: oreoPI
+  description: "Local-first ambient voice assistant runtime"
+  stack: rust
+
+ci:
+  lint_cmd: "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings"
+  test_cmd: "cargo test --workspace --all-targets"
+  build_cmd: "cargo build --workspace --all-targets --locked"
+
+maintainers:
+  - github: Circuit-Overtime
+    skills: [rust, agent, audio, embedded, ci, security]
+    lead: true
+
+gist:
+  id: ""
+  account: elixpoo

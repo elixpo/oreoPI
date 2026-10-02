@@ -1,0 +1,16 @@
+THIRD-PARTY NOTICES
+===================
+
+The OreoPI source code is licensed under the Elixpo standard. Third-party
+components retain their own licences.
+
+Current build dependencies:
+
+  * Rust standard library and toolchain — Apache-2.0 / MIT
+  * GitHub Actions used by CI — each action retains its upstream licence
+
+The authoritative component inventory and source pins are maintained in:
+
+  docs/third-party.md
+
+Vendored Crumb harness notices will be added with the pinned import in WP-002.

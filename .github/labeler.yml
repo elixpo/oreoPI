@@ -1,0 +1,31 @@
+rust:
+  - changed-files:
+      - any-glob-to-any-file: ['**/*.rs', 'Cargo.toml', 'Cargo.lock']
+
+cli:
+  - changed-files:
+      - any-glob-to-any-file: ['apps/elixpo-cli/**']
+
+core:
+  - changed-files:
+      - any-glob-to-any-file: ['crates/oreo-core/**']
+
+audio:
+  - changed-files:
+      - any-glob-to-any-file: ['crates/oreo-audio/**', 'tests/audio/**']
+
+persona:
+  - changed-files:
+      - any-glob-to-any-file: ['persona/**', 'tests/persona/**']
+
+vendor:
+  - changed-files:
+      - any-glob-to-any-file: ['vendor/**']
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ['**/*.md', 'docs/**']
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: ['.github/**']
