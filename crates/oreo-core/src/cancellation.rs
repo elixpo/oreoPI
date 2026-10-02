@@ -35,4 +35,3 @@ mod tests {
         assert!(second.is_cancelled());
     }
 }
-

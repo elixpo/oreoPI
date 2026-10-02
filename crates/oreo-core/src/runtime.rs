@@ -2,7 +2,9 @@ use std::error::Error;
 use std::fmt;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use crate::{Affect, CancellationToken, HarnessEvent, LocalIntent, Route, RuntimeConfig, RuntimeEvent};
+use crate::{
+    Affect, CancellationToken, HarnessEvent, LocalIntent, Route, RuntimeConfig, RuntimeEvent,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResponsePlan {
@@ -172,10 +174,7 @@ impl<H: Harness, O: OutputSink> AssistantRuntime<H, O> {
     }
 }
 
-fn send_event(
-    sender: &SyncSender<RuntimeEvent>,
-    event: RuntimeEvent,
-) -> Result<(), RuntimeError> {
+fn send_event(sender: &SyncSender<RuntimeEvent>, event: RuntimeEvent) -> Result<(), RuntimeError> {
     sender.try_send(event).map_err(|error| match error {
         TrySendError::Full(_) => RuntimeError::EventQueueFull,
         TrySendError::Disconnected(_) => RuntimeError::EventQueueDisconnected,
@@ -232,12 +231,8 @@ mod tests {
     use super::{AssistantRuntime, CancellationToken, Route, RuntimeConfig, RuntimeError};
 
     fn runtime() -> AssistantRuntime<FakeHarness, CollectingSink> {
-        AssistantRuntime::new(
-            RuntimeConfig::sbc(),
-            FakeHarness,
-            CollectingSink::default(),
-        )
-        .expect("valid fixture")
+        AssistantRuntime::new(RuntimeConfig::sbc(), FakeHarness, CollectingSink::default())
+            .expect("valid fixture")
     }
 
     #[test]
@@ -249,9 +244,11 @@ mod tests {
         assert_eq!(result.route, Route::Agent);
         assert_eq!(result.response.speech, "Oreo heard: What is running?");
         assert_eq!(runtime.output().responses.len(), 1);
-        assert!(runtime.drain_events().contains(&RuntimeEvent::Harness(
-            HarnessEvent::Completed
-        )));
+        assert!(
+            runtime
+                .drain_events()
+                .contains(&RuntimeEvent::Harness(HarnessEvent::Completed))
+        );
     }
 
     #[test]
@@ -262,10 +259,12 @@ mod tests {
             .expect("local turn should complete");
         assert!(matches!(result.route, Route::Local(_)));
         assert_eq!(result.response.speech, "Paused.");
-        assert!(!runtime
-            .drain_events()
-            .iter()
-            .any(|event| matches!(event, RuntimeEvent::Harness(_))));
+        assert!(
+            !runtime
+                .drain_events()
+                .iter()
+                .any(|event| matches!(event, RuntimeEvent::Harness(_)))
+        );
     }
 
     #[test]
@@ -304,4 +303,3 @@ mod tests {
         );
     }
 }
-

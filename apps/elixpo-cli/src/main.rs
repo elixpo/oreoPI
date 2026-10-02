@@ -41,4 +41,3 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
         _ => Err("usage: elixpo <status|ask|--version>".into()),
     }
 }
-

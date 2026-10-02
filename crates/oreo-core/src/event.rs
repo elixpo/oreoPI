@@ -53,7 +53,10 @@ mod tests {
     #[test]
     fn known_commands_route_locally() {
         assert_eq!(Route::classify(" Pause "), Route::Local(LocalIntent::Pause));
-        assert_eq!(Route::classify("volume up"), Route::Local(LocalIntent::VolumeUp));
+        assert_eq!(
+            Route::classify("volume up"),
+            Route::Local(LocalIntent::VolumeUp)
+        );
     }
 
     #[test]
@@ -61,4 +64,3 @@ mod tests {
         assert_eq!(Route::classify("What is running?"), Route::Agent);
     }
 }
-
