@@ -391,6 +391,44 @@ impl StateStore {
         .collect()
     }
 
+    /// Lists all scheduled timers in deterministic deadline order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted database error for query or decoding failures.
+    pub fn scheduled_timers(&self) -> Result<Vec<TimerRecord>, StateError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, due_at_ms, created_at_ms, status
+                 FROM timers
+                 WHERE status = 'scheduled'
+                 ORDER BY due_at_ms, id
+                 LIMIT ?1",
+            )
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map([to_sql_count(self.limits.max_active_timers)?], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(database_error)?;
+        rows.map(|row| {
+            let (id, due_at_ms, created_at_ms, status) = row.map_err(database_error)?;
+            Ok(TimerRecord {
+                id,
+                due_at_ms: from_sql_time(due_at_ms)?,
+                created_at_ms: from_sql_time(created_at_ms)?,
+                status: TimerStatus::parse(&status)?,
+            })
+        })
+        .collect()
+    }
+
     /// Marks a scheduled timer as fired and bounds terminal timer history.
     ///
     /// # Errors
@@ -676,5 +714,21 @@ mod tests {
             )
             .expect("history count reads");
         assert_eq!(retained, 2);
+    }
+
+    #[test]
+    fn scheduled_timers_are_listed_by_deadline() {
+        let mut store = StateStore::in_memory(limits()).expect("store opens");
+        let clock = ManualClock::new(1_000);
+        store
+            .schedule_timer(&clock, "later", 4_000)
+            .expect("later timer schedules");
+        store
+            .schedule_timer(&clock, "sooner", 2_000)
+            .expect("sooner timer schedules");
+
+        let timers = store.scheduled_timers().expect("timers list");
+        assert_eq!(timers[0].id, "sooner");
+        assert_eq!(timers[1].id, "later");
     }
 }

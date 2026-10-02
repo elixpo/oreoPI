@@ -8,6 +8,7 @@ license-file.workspace = true
 [dependencies]
 oreo-agent = { path = "../../crates/oreo-agent" }
 oreo-core = { path = "../../crates/oreo-core" }
+oreo-state = { path = "../../crates/oreo-state" }
 tokio = { workspace = true, features = ["rt"] }
 
 [lints]
