@@ -3,6 +3,5 @@
 !/.elixpo/project.yml
 *.log
 *.wav
-.env
-.env.*
+.env.local
 !.env.example
