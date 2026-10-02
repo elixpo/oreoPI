@@ -1,12 +1,14 @@
 [workspace]
 members = [
     "apps/elixpo-cli",
+    "apps/oreo-daemon",
     "crates/crumb-agent",
     "crates/crumb-harness",
     "crates/crumb-llm",
     "crates/crumb-pollinations",
     "crates/oreo-agent",
     "crates/oreo-core",
+    "crates/oreo-local-api",
     "crates/oreo-state",
 ]
 resolver = "2"

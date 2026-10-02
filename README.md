@@ -29,11 +29,13 @@ credential and exact model are supplied through the process environment.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
+cargo run -p oreo-daemon
 cargo run -p elixpo-cli -- status
 cargo run -p elixpo-cli -- tools
 cargo run -p elixpo-cli -- timer set tea 300
 cargo run -p elixpo-cli -- timer list
 cargo run -p elixpo-cli -- timer cancel tea
+cargo run -p elixpo-cli -- daemon stop
 cargo run -p elixpo-cli -- ask --offline "What is running?"
 POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask "Hello Oreo"
 ```

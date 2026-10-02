@@ -1,19 +1,20 @@
 [package]
-name = "elixpo-cli"
+name = "oreo-daemon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 
 [dependencies]
-oreo-agent = { path = "../../crates/oreo-agent" }
-oreo-core = { path = "../../crates/oreo-core" }
 oreo-local-api = { path = "../../crates/oreo-local-api" }
-tokio = { workspace = true, features = ["rt"] }
+oreo-state = { path = "../../crates/oreo-state" }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
 
 [[bin]]
-name = "elixpo"
+name = "oreo-daemon"
 path = "src/main.rs"

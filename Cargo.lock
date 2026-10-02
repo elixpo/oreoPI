@@ -257,7 +257,7 @@ version = "0.1.0"
 dependencies = [
  "oreo-agent",
  "oreo-core",
- "oreo-state",
+ "oreo-local-api",
  "tokio",
 ]
 
@@ -870,6 +870,23 @@ dependencies = [
 [[package]]
 name = "oreo-core"
 version = "0.1.0"
+
+[[package]]
+name = "oreo-daemon"
+version = "0.1.0"
+dependencies = [
+ "oreo-local-api",
+ "oreo-state",
+ "tempfile",
+]
+
+[[package]]
+name = "oreo-local-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "oreo-state"

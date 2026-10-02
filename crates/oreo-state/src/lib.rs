@@ -580,7 +580,7 @@ pub enum StateErrorKind {
     Database,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StateError {
     pub kind: StateErrorKind,
     message: &'static str,

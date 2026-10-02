@@ -12,7 +12,7 @@ use oreo_agent::{
     OreoAgent, register_device_status,
 };
 use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig, StdoutSink};
-use oreo_state::{Clock, StateLimits, StateStore, SystemClock};
+use oreo_local_api::{PROTOCOL_VERSION, Request, Response, send_request};
 
 const OREO_PERSONA: &str = include_str!("../../../config/persona.md");
 
@@ -31,8 +31,19 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
         Some("status") => {
             let config = RuntimeConfig::sbc();
             config.validate()?;
-            let state = state_store()?;
-            let active_timers = state.scheduled_timers()?.len();
+            let daemon = match send_request(
+                &socket_path()?,
+                &Request::Status {
+                    version: PROTOCOL_VERSION,
+                },
+            ) {
+                Ok(Response::Status {
+                    schema_version,
+                    active_timers,
+                    ..
+                }) => format!("ready (schema: {schema_version}, timers: {active_timers})"),
+                _ => "offline".to_owned(),
+            };
             let agent = if env::var_os("POLLINATIONS_API_KEY").is_some()
                 && env::var_os("OREO_MODEL").is_some()
             {
@@ -41,12 +52,8 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
                 "offline (set POLLINATIONS_API_KEY and OREO_MODEL)"
             };
             println!(
-                "Oreo runtime: ready (profile: {}, queue: {}, state_schema: {}, active_timers: {}, agent: {})",
-                config.profile_name,
-                config.event_capacity,
-                StateStore::schema_version(),
-                active_timers,
-                agent
+                "Oreo runtime: ready (profile: {}, queue: {}, daemon: {}, agent: {})",
+                config.profile_name, config.event_capacity, daemon, agent
             );
             Ok(())
         }
@@ -81,11 +88,12 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
             Ok(())
         }
         Some("timer") => timer_command(arguments),
+        Some("daemon") => daemon_command(arguments),
         Some("--version" | "-V") => {
             println!("elixpo {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => Err("usage: elixpo <status|ask [--offline]|tools|timer|--version>".into()),
+        _ => Err("usage: elixpo <status|ask [--offline]|tools|timer|daemon|--version>".into()),
     }
 }
 
@@ -148,8 +156,6 @@ fn timer_command(
     arguments: impl Iterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let arguments = arguments.collect::<Vec<_>>();
-    let clock = SystemClock;
-    let mut state = state_store()?;
     match arguments.as_slice() {
         [command, id, seconds] if command == "set" => {
             let seconds = seconds
@@ -161,34 +167,82 @@ fn timer_command(
             let duration_ms = seconds
                 .checked_mul(1_000)
                 .ok_or("timer duration is too large")?;
-            let due_at_ms = clock
-                .now_ms()
-                .checked_add(duration_ms)
-                .ok_or("timer deadline is too large")?;
-            state.schedule_timer(&clock, id, due_at_ms)?;
-            println!("Timer {id} scheduled for {seconds} seconds.");
-            Ok(())
+            match daemon_request(&Request::TimerSet {
+                version: PROTOCOL_VERSION,
+                id: id.clone(),
+                duration_ms,
+            })? {
+                Response::TimerSet { .. } => {
+                    println!("Timer {id} scheduled for {seconds} seconds.");
+                    Ok(())
+                }
+                response => unexpected_response(&response),
+            }
         }
         [command] if command == "list" => {
-            let timers = state.scheduled_timers()?;
-            if timers.is_empty() {
-                println!("No active timers.");
-            } else {
-                let now_ms = clock.now_ms();
-                for timer in timers {
-                    let remaining_seconds = timer.due_at_ms.saturating_sub(now_ms).div_ceil(1_000);
-                    println!("{}\t{} seconds remaining", timer.id, remaining_seconds);
+            match daemon_request(&Request::TimerList {
+                version: PROTOCOL_VERSION,
+            })? {
+                Response::TimerList { timers, .. } => {
+                    if timers.is_empty() {
+                        println!("No active timers.");
+                    } else {
+                        let now_ms = now_ms()?;
+                        for timer in timers {
+                            let remaining_seconds =
+                                timer.due_at_ms.saturating_sub(now_ms).div_ceil(1_000);
+                            println!("{}\t{} seconds remaining", timer.id, remaining_seconds);
+                        }
+                    }
+                    Ok(())
                 }
+                response => unexpected_response(&response),
             }
-            Ok(())
         }
         [command, id] if command == "cancel" => {
-            state.cancel_timer(id)?;
-            println!("Timer {id} cancelled.");
-            Ok(())
+            match daemon_request(&Request::TimerCancel {
+                version: PROTOCOL_VERSION,
+                id: id.clone(),
+            })? {
+                Response::TimerCancelled { .. } => {
+                    println!("Timer {id} cancelled.");
+                    Ok(())
+                }
+                response => unexpected_response(&response),
+            }
         }
         _ => Err("usage: elixpo timer <set <id> <seconds>|list|cancel <id>>".into()),
     }
+}
+
+fn daemon_command(
+    arguments: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match arguments.collect::<Vec<_>>().as_slice() {
+        [command] if command == "stop" => match daemon_request(&Request::Shutdown {
+            version: PROTOCOL_VERSION,
+        })? {
+            Response::ShuttingDown { .. } => {
+                println!("Oreo daemon is stopping.");
+                Ok(())
+            }
+            response => unexpected_response(&response),
+        },
+        _ => Err("usage: elixpo daemon stop".into()),
+    }
+}
+
+fn daemon_request(request: &Request) -> Result<Response, Box<dyn std::error::Error>> {
+    let response = send_request(&socket_path()?, request)?;
+    if let Response::Error { message, .. } = response {
+        Err(message.into())
+    } else {
+        Ok(response)
+    }
+}
+
+fn unexpected_response<T>(_response: &Response) -> Result<T, Box<dyn std::error::Error>> {
+    Err("local daemon returned an unexpected response".into())
 }
 
 fn state_directory() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -211,11 +265,15 @@ fn session_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(state_directory()?.join("sessions"))
 }
 
-fn state_store() -> Result<StateStore, Box<dyn std::error::Error>> {
-    Ok(StateStore::open(
-        state_directory()?.join("oreo.db"),
-        StateLimits::sbc(),
-    )?)
+fn socket_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    Ok(state_directory()?.join("oreo.sock"))
+}
+
+fn now_ms() -> Result<u64, Box<dyn std::error::Error>> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?)
 }
 
 fn new_session_id() -> Result<String, Box<dyn std::error::Error>> {
