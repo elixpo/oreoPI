@@ -6,7 +6,9 @@ rust-version.workspace = true
 license-file.workspace = true
 
 [dependencies]
+oreo-agent = { path = "../../crates/oreo-agent" }
 oreo-core = { path = "../../crates/oreo-core" }
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true

@@ -12,14 +12,16 @@ The GitHub issue tracker is the source of truth:
 
 ## Current state
 
-The workspace contains the deterministic reference path required by WP-001:
+The workspace contains the deterministic reference path and the vendored,
+Oreo-owned agent boundary required by WP-001 and WP-002:
 
 ```text
-CLI input -> local router or fake harness -> response plan -> output sink
+CLI input -> local router or Oreo agent -> response plan -> output sink
 ```
 
-It intentionally has no microphone, model, network, account, or hardware
-dependency yet.
+The microphone and hardware paths are not connected yet. The CLI keeps an
+explicit offline path and enables the live Pollinations provider only when its
+credential and exact model are supplied through the process environment.
 
 ## Build and test
 
@@ -28,8 +30,13 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 cargo run -p elixpo-cli -- status
-cargo run -p elixpo-cli -- ask "What is running?"
+cargo run -p elixpo-cli -- ask --offline "What is running?"
+POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask "Hello Oreo"
 ```
+
+`OREO_STATE_DIR` can override the local state location. Session journals store
+only bounded metadata and digests; prompts, response text, credentials, and
+tool payloads are not persisted.
 
 ## Invariants
 
