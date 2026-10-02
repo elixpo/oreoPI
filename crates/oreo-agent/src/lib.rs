@@ -18,8 +18,10 @@ use crumb_harness::{
 };
 use crumb_llm::{LlmProvider, TokenUsage};
 
+mod builtins;
 mod capability;
 
+pub use builtins::{DeviceStatus, register_device_status};
 pub use capability::{
     ApprovalUi, Capability, CapabilityError, CapabilityLocation, CapabilityRegistry,
     ConfirmationPolicy, DenyApprovalUi,

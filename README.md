@@ -30,6 +30,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 cargo run -p elixpo-cli -- status
+cargo run -p elixpo-cli -- tools
 cargo run -p elixpo-cli -- ask --offline "What is running?"
 POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask "Hello Oreo"
 ```

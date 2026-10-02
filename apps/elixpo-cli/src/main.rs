@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use oreo_agent::provider::{PollinationsConfig, PollinationsProvider};
 use oreo_agent::tools::CancellationToken as AgentCancellation;
 use oreo_agent::{
-    AgentEvent, AgentProfile, CapabilityRegistry, DenyApprovalUi, EventSink, OreoAgent,
+    AgentEvent, AgentProfile, CapabilityRegistry, DenyApprovalUi, DeviceStatus, EventSink,
+    OreoAgent, register_device_status,
 };
 use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig, StdoutSink};
 
@@ -58,11 +59,25 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
                 live_ask(request)
             }
         }
+        Some("tools") => {
+            let registry = capability_registry(false)?;
+            for capability in registry.capabilities() {
+                println!(
+                    "{}\t{:?}\t{:?}\toffline={}\t{}",
+                    capability.name,
+                    capability.location,
+                    capability.risk,
+                    capability.works_offline,
+                    capability.disclosure
+                );
+            }
+            Ok(())
+        }
         Some("--version" | "-V") => {
             println!("elixpo {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => Err("usage: elixpo <status|ask [--offline]|--version>".into()),
+        _ => Err("usage: elixpo <status|ask [--offline]|tools|--version>".into()),
     }
 }
 
@@ -83,7 +98,7 @@ fn live_ask(request: String) -> Result<(), Box<dyn std::error::Error>> {
     )?)?);
     let mut profile = AgentProfile::sbc(model);
     OREO_PERSONA.clone_into(&mut profile.persona);
-    let (tools, approvals) = CapabilityRegistry::new(true, Arc::new(DenyApprovalUi)).finish();
+    let (tools, approvals) = capability_registry(true)?.finish();
     let mut agent = OreoAgent::new(
         provider,
         tools,
@@ -104,6 +119,21 @@ fn live_ask(request: String) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", response.text);
     }
     Ok(())
+}
+
+fn capability_registry(
+    network_enabled: bool,
+) -> Result<CapabilityRegistry, Box<dyn std::error::Error>> {
+    let mut registry = CapabilityRegistry::new(network_enabled, Arc::new(DenyApprovalUi));
+    register_device_status(
+        &mut registry,
+        DeviceStatus {
+            profile: "sbc".to_owned(),
+            network_enabled,
+            audio_ready: false,
+        },
+    )?;
+    Ok(registry)
 }
 
 fn state_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
