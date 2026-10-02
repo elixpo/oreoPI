@@ -6,8 +6,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use oreo_agent::provider::{PollinationsConfig, PollinationsProvider};
-use oreo_agent::tools::{CancellationToken as AgentCancellation, DenyAllApprovals, ToolHost};
-use oreo_agent::{AgentEvent, AgentProfile, EventSink, OreoAgent};
+use oreo_agent::tools::CancellationToken as AgentCancellation;
+use oreo_agent::{
+    AgentEvent, AgentProfile, CapabilityRegistry, DenyApprovalUi, EventSink, OreoAgent,
+};
 use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig, StdoutSink};
 
 const OREO_PERSONA: &str = include_str!("../../../config/persona.md");
@@ -81,10 +83,11 @@ fn live_ask(request: String) -> Result<(), Box<dyn std::error::Error>> {
     )?)?);
     let mut profile = AgentProfile::sbc(model);
     OREO_PERSONA.clone_into(&mut profile.persona);
+    let (tools, approvals) = CapabilityRegistry::new(true, Arc::new(DenyApprovalUi)).finish();
     let mut agent = OreoAgent::new(
         provider,
-        ToolHost::default(),
-        Arc::new(DenyAllApprovals),
+        tools,
+        approvals,
         state_root()?,
         &new_session_id()?,
         profile,

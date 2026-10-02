@@ -18,6 +18,13 @@ use crumb_harness::{
 };
 use crumb_llm::{LlmProvider, TokenUsage};
 
+mod capability;
+
+pub use capability::{
+    ApprovalUi, Capability, CapabilityError, CapabilityLocation, CapabilityRegistry,
+    ConfirmationPolicy, DenyApprovalUi,
+};
+
 /// Non-secret, bounded settings applied to every Oreo agent turn.
 ///
 /// Persona and trusted context may contain private data, so this type does not
@@ -41,7 +48,7 @@ impl AgentProfile {
             trusted_context: Vec::new(),
             max_output_tokens: Some(512),
             limits: HarnessLimits::default(),
-            mode: AgentMode::Auto,
+            mode: AgentMode::Negotiate,
         }
     }
 

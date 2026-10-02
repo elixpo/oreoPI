@@ -6,13 +6,14 @@ rust-version.workspace = true
 license-file.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 crumb-agent = { path = "../../vendor/crumb-harness/upstream/crates/crumb-agent" }
 crumb-harness = { path = "../../vendor/crumb-harness/upstream/crates/crumb-harness" }
 crumb-llm = { path = "../../vendor/crumb-harness/upstream/crates/crumb-llm" }
 crumb-pollinations = { path = "../../vendor/crumb-harness/upstream/crates/crumb-pollinations" }
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
