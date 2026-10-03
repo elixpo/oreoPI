@@ -12,7 +12,7 @@ use oreo_agent::{
     OreoAgent, inspect_memory, list_memory, register_device_status,
 };
 use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig, StdoutSink};
-use oreo_local_api::{PROTOCOL_VERSION, Request, Response, send_request};
+use oreo_local_api::{PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request};
 
 const OREO_PERSONA: &str = include_str!("../../../config/persona.md");
 
@@ -90,12 +90,16 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
         Some("timer") => timer_command(arguments),
         Some("daemon") => daemon_command(arguments),
         Some("memory") => memory_command(arguments),
+        Some("diagnostics") => diagnostics_command(arguments),
         Some("--version" | "-V") => {
             println!("elixpo {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         _ => {
-            Err("usage: elixpo <status|ask [--offline]|tools|timer|daemon|memory|--version>".into())
+            Err(
+                "usage: elixpo <status|ask [--offline]|tools|timer|daemon|memory|diagnostics|--version>"
+                    .into(),
+            )
         }
     }
 }
@@ -273,6 +277,48 @@ fn memory_command(
             Ok(())
         }
         _ => Err("usage: elixpo memory <list|inspect <id>>".into()),
+    }
+}
+
+fn diagnostics_command(
+    arguments: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if arguments.count() != 0 {
+        return Err("usage: elixpo diagnostics".into());
+    }
+    match daemon_request(&Request::Diagnostics {
+        version: PROTOCOL_VERSION,
+    })? {
+        Response::Diagnostics {
+            phase,
+            schema_version,
+            retained_events,
+            event_limit,
+            active_timers,
+            timer_limit,
+            resident_memory_kib,
+            ..
+        } => {
+            println!("phase: {}", phase_name(phase));
+            println!("state_schema: {schema_version}");
+            println!("runtime_events: {retained_events}/{event_limit}");
+            println!("active_timers: {active_timers}/{timer_limit}");
+            match resident_memory_kib {
+                Some(memory) => println!("resident_memory_kib: {memory}"),
+                None => println!("resident_memory_kib: unavailable"),
+            }
+            Ok(())
+        }
+        response => unexpected_response(&response),
+    }
+}
+
+const fn phase_name(phase: RuntimePhase) -> &'static str {
+    match phase {
+        RuntimePhase::Starting => "starting",
+        RuntimePhase::Ready => "ready",
+        RuntimePhase::Stopping => "stopping",
+        RuntimePhase::Faulted => "faulted",
     }
 }
 

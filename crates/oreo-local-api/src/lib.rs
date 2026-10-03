@@ -17,6 +17,9 @@ pub enum Request {
     Status {
         version: u16,
     },
+    Diagnostics {
+        version: u16,
+    },
     TimerSet {
         version: u16,
         id: String,
@@ -39,12 +42,22 @@ impl Request {
     pub const fn version(&self) -> u16 {
         match self {
             Self::Status { version }
+            | Self::Diagnostics { version }
             | Self::TimerSet { version, .. }
             | Self::TimerList { version }
             | Self::TimerCancel { version, .. }
             | Self::Shutdown { version } => *version,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePhase {
+    Starting,
+    Ready,
+    Stopping,
+    Faulted,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -70,8 +83,19 @@ pub enum ErrorCode {
 pub enum Response {
     Status {
         version: u16,
+        phase: RuntimePhase,
         schema_version: u32,
         active_timers: usize,
+    },
+    Diagnostics {
+        version: u16,
+        phase: RuntimePhase,
+        schema_version: u32,
+        retained_events: usize,
+        event_limit: usize,
+        active_timers: usize,
+        timer_limit: usize,
+        resident_memory_kib: Option<u64>,
     },
     TimerSet {
         version: u16,

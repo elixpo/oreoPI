@@ -10,6 +10,7 @@ oreo-local-api = { path = "../../crates/oreo-local-api" }
 oreo-state = { path = "../../crates/oreo-state" }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

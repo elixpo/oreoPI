@@ -12,11 +12,13 @@ The GitHub issue tracker is the source of truth:
 
 ## Current state
 
-The workspace contains the deterministic reference path and the vendored,
-Oreo-owned agent boundary required by WP-001 and WP-002:
+The workspace contains the deterministic reference path, Oreo-owned agent
+boundary, bounded SQLite state, and single-owner local daemon required through
+WP-003:
 
 ```text
-CLI input -> local router or Oreo agent -> response plan -> output sink
+CLI input -> local Unix socket -> daemon -> bounded SQLite state
+         \-> local router or Oreo agent -> response plan -> output sink
 ```
 
 The microphone and hardware paths are not connected yet. The CLI keeps an
@@ -31,6 +33,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 cargo run -p oreo-daemon
 cargo run -p elixpo-cli -- status
+cargo run -p elixpo-cli -- diagnostics
 cargo run -p elixpo-cli -- tools
 cargo run -p elixpo-cli -- timer set tea 300
 cargo run -p elixpo-cli -- timer list
@@ -45,6 +48,12 @@ POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask "Hello Or
 `OREO_STATE_DIR` can override the local state location. Session journals store
 only bounded metadata and digests; prompts, response text, credentials, and
 tool payloads are not persisted.
+
+The daemon emits newline-delimited JSON operational logs to standard error.
+Their schema accepts only a timestamp, component, fixed event name, and fixed
+outcome; timer names and user or model content are excluded. `elixpo
+diagnostics` reports lifecycle state and current resource/bound utilization
+without exposing private content.
 
 ## Invariants
 

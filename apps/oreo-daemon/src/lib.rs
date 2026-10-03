@@ -10,14 +10,14 @@ mod unix {
     use std::os::unix::fs::{FileTypeExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     use std::thread;
     use std::time::Duration;
 
     use oreo_local_api::{
         ApiTimer, ErrorCode, MAX_TIMER_DURATION_MS, PROTOCOL_VERSION, Request, Response,
-        read_request, write_response,
+        RuntimePhase, read_request, write_response,
     };
     use oreo_state::{
         Clock, EventOutcome, RuntimeEventKind, StateError, StateErrorKind, StateLimits, StateStore,
@@ -45,6 +45,34 @@ mod unix {
         store: Mutex<StateStore>,
         wake: Condvar,
         stopping: AtomicBool,
+        phase: AtomicU8,
+        limits: StateLimits,
+    }
+
+    const PHASE_STARTING: u8 = 0;
+    const PHASE_READY: u8 = 1;
+    const PHASE_STOPPING: u8 = 2;
+    const PHASE_FAULTED: u8 = 3;
+
+    impl SharedState {
+        fn phase(&self) -> RuntimePhase {
+            match self.phase.load(Ordering::Acquire) {
+                PHASE_STARTING => RuntimePhase::Starting,
+                PHASE_READY => RuntimePhase::Ready,
+                PHASE_STOPPING => RuntimePhase::Stopping,
+                _ => RuntimePhase::Faulted,
+            }
+        }
+
+        fn set_phase(&self, phase: RuntimePhase) {
+            let value = match phase {
+                RuntimePhase::Starting => PHASE_STARTING,
+                RuntimePhase::Ready => PHASE_READY,
+                RuntimePhase::Stopping => PHASE_STOPPING,
+                RuntimePhase::Faulted => PHASE_FAULTED,
+            };
+            self.phase.store(value, Ordering::Release);
+        }
     }
 
     struct SocketGuard(PathBuf);
@@ -66,7 +94,14 @@ mod unix {
         let socket_path = config.socket_path();
         prepare_socket_path(&socket_path)?;
         let database_path = config.database_path();
-        let store = StateStore::open(&database_path, config.limits).map_err(state_error)?;
+        let mut store = StateStore::open(&database_path, config.limits).map_err(state_error)?;
+        store
+            .record_event(
+                &SystemClock,
+                RuntimeEventKind::RuntimeStarted,
+                EventOutcome::Succeeded,
+            )
+            .map_err(state_error)?;
         secure_file(&database_path)?;
         let listener = UnixListener::bind(&socket_path).map_err(io_error)?;
         secure_file(&socket_path)?;
@@ -75,11 +110,20 @@ mod unix {
             store: Mutex::new(store),
             wake: Condvar::new(),
             stopping: AtomicBool::new(false),
+            phase: AtomicU8::new(PHASE_STARTING),
+            limits: config.limits,
         });
         let scheduler_state = shared.clone();
         let scheduler = thread::Builder::new()
             .name("oreo-timers".to_owned())
-            .spawn(move || scheduler_loop(&scheduler_state))
+            .spawn(move || {
+                let result = scheduler_loop(&scheduler_state);
+                if result.is_err() {
+                    scheduler_state.set_phase(RuntimePhase::Faulted);
+                    write_log(LogEvent::RuntimeFault, LogOutcome::Failed);
+                }
+                result
+            })
             .map_err(|_| {
                 DaemonError::new(
                     DaemonErrorKind::Scheduler,
@@ -87,7 +131,14 @@ mod unix {
                 )
             })?;
 
+        shared.set_phase(RuntimePhase::Ready);
+        write_log(LogEvent::DaemonStarted, LogOutcome::Succeeded);
+
         let server_result = serve(&listener, &shared);
+        if server_result.is_err() {
+            shared.set_phase(RuntimePhase::Faulted);
+            write_log(LogEvent::RuntimeFault, LogOutcome::Failed);
+        }
         let stop_result = request_stop(&shared);
         let scheduler_result = scheduler.join().map_err(|_| {
             DaemonError::new(
@@ -116,6 +167,7 @@ mod unix {
             .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(2))))
             .map_err(io_error)?;
         let Ok(request) = read_request(stream) else {
+            write_log(LogEvent::RequestRejected, LogOutcome::Denied);
             write_response(
                 stream,
                 &error_response(ErrorCode::InvalidRequest, "request is invalid"),
@@ -130,6 +182,7 @@ mod unix {
 
     fn handle_request(shared: &Arc<SharedState>, request: Request) -> (Response, bool) {
         if request.version() != PROTOCOL_VERSION {
+            write_log(LogEvent::RequestRejected, LogOutcome::Denied);
             return (
                 error_response(
                     ErrorCode::UnsupportedVersion,
@@ -140,6 +193,7 @@ mod unix {
         }
         match request {
             Request::Status { .. } => (status_response(shared), false),
+            Request::Diagnostics { .. } => (diagnostics_response(shared), false),
             Request::TimerSet {
                 id, duration_ms, ..
             } => (set_timer_response(shared, &id, duration_ms), false),
@@ -147,6 +201,7 @@ mod unix {
             Request::TimerCancel { id, .. } => (cancel_timer_response(shared, id), false),
             Request::Shutdown { .. } => {
                 if request_stop(shared).is_ok() {
+                    write_log(LogEvent::DaemonStopping, LogOutcome::Succeeded);
                     (
                         Response::ShuttingDown {
                             version: PROTOCOL_VERSION,
@@ -164,8 +219,30 @@ mod unix {
         match lock_store(shared).and_then(|store| store.scheduled_timers().map_err(state_error)) {
             Ok(timers) => Response::Status {
                 version: PROTOCOL_VERSION,
+                phase: shared.phase(),
                 schema_version: StateStore::schema_version(),
                 active_timers: timers.len(),
+            },
+            Err(_) => internal_error(),
+        }
+    }
+
+    fn diagnostics_response(shared: &SharedState) -> Response {
+        let snapshot = lock_store(shared).and_then(|store| {
+            let retained_events = store.event_count().map_err(state_error)?;
+            let active_timers = store.scheduled_timers().map_err(state_error)?.len();
+            Ok((retained_events, active_timers))
+        });
+        match snapshot {
+            Ok((retained_events, active_timers)) => Response::Diagnostics {
+                version: PROTOCOL_VERSION,
+                phase: shared.phase(),
+                schema_version: StateStore::schema_version(),
+                retained_events,
+                event_limit: shared.limits.max_events,
+                active_timers,
+                timer_limit: shared.limits.max_active_timers,
+                resident_memory_kib: resident_memory_kib(),
             },
             Err(_) => internal_error(),
         }
@@ -189,6 +266,7 @@ mod unix {
         }) {
             Ok(timer) => {
                 shared.wake.notify_all();
+                write_log(LogEvent::TimerScheduled, LogOutcome::Succeeded);
                 Response::TimerSet {
                     version: PROTOCOL_VERSION,
                     timer: ApiTimer {
@@ -224,6 +302,7 @@ mod unix {
         {
             Ok(()) => {
                 shared.wake.notify_all();
+                write_log(LogEvent::TimerCancelled, LogOutcome::Succeeded);
                 Response::TimerCancelled {
                     version: PROTOCOL_VERSION,
                     id,
@@ -268,6 +347,7 @@ mod unix {
             store
                 .record_event(clock, RuntimeEventKind::TimerFired, EventOutcome::Succeeded)
                 .map_err(state_error)?;
+            write_log(LogEvent::TimerFired, LogOutcome::Succeeded);
             fired.push(timer.id);
         }
         Ok(fired)
@@ -280,6 +360,9 @@ mod unix {
     fn request_stop(shared: &SharedState) -> Result<(), DaemonError> {
         let guard = lock_store(shared)?;
         shared.stopping.store(true, Ordering::Release);
+        if shared.phase() != RuntimePhase::Faulted {
+            shared.set_phase(RuntimePhase::Stopping);
+        }
         drop(guard);
         shared.wake.notify_all();
         Ok(())
@@ -313,6 +396,82 @@ mod unix {
 
     fn secure_file(path: &Path) -> Result<(), DaemonError> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io_error)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resident_memory_kib() -> Option<u64> {
+        fs::read_to_string("/proc/self/status")
+            .ok()?
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("VmRSS:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    const fn resident_memory_kib() -> Option<u64> {
+        None
+    }
+
+    #[derive(Clone, Copy)]
+    enum LogEvent {
+        DaemonStarted,
+        DaemonStopping,
+        RequestRejected,
+        TimerScheduled,
+        TimerCancelled,
+        TimerFired,
+        RuntimeFault,
+    }
+
+    impl LogEvent {
+        const fn as_str(self) -> &'static str {
+            match self {
+                Self::DaemonStarted => "daemon_started",
+                Self::DaemonStopping => "daemon_stopping",
+                Self::RequestRejected => "request_rejected",
+                Self::TimerScheduled => "timer_scheduled",
+                Self::TimerCancelled => "timer_cancelled",
+                Self::TimerFired => "timer_fired",
+                Self::RuntimeFault => "runtime_fault",
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum LogOutcome {
+        Succeeded,
+        Denied,
+        Failed,
+    }
+
+    impl LogOutcome {
+        const fn as_str(self) -> &'static str {
+            match self {
+                Self::Succeeded => "succeeded",
+                Self::Denied => "denied",
+                Self::Failed => "failed",
+            }
+        }
+    }
+
+    fn structured_log_line(event: LogEvent, outcome: LogOutcome, at_ms: u64) -> String {
+        format!(
+            r#"{{"at_ms":{at_ms},"component":"oreo-daemon","event":"{}","outcome":"{}"}}"#,
+            event.as_str(),
+            outcome.as_str()
+        )
+    }
+
+    fn write_log(event: LogEvent, outcome: LogOutcome) {
+        eprintln!(
+            "{}",
+            structured_log_line(event, outcome, SystemClock.now_ms())
+        );
     }
 
     fn error_response(code: ErrorCode, message: &str) -> Response {
@@ -430,10 +589,10 @@ mod unix {
         use std::thread;
         use std::time::Duration;
 
-        use oreo_local_api::{PROTOCOL_VERSION, Request, Response, send_request};
+        use oreo_local_api::{PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request};
         use oreo_state::{ManualClock, StateLimits, StateStore};
 
-        use super::{DaemonConfig, process_due, run};
+        use super::{DaemonConfig, LogEvent, LogOutcome, process_due, run, structured_log_line};
 
         fn limits() -> StateLimits {
             StateLimits {
@@ -461,6 +620,17 @@ mod unix {
                 vec!["tea"]
             );
             assert!(store.scheduled_timers().expect("timers list").is_empty());
+        }
+
+        #[test]
+        fn structured_logs_have_only_fixed_redacted_fields() {
+            let line = structured_log_line(LogEvent::TimerFired, LogOutcome::Succeeded, 42);
+            let value: serde_json::Value = serde_json::from_str(&line).expect("log is JSON");
+            assert_eq!(value["at_ms"], 42);
+            assert_eq!(value["component"], "oreo-daemon");
+            assert_eq!(value["event"], "timer_fired");
+            assert_eq!(value["outcome"], "succeeded");
+            assert_eq!(value.as_object().expect("log is an object").len(), 4);
         }
 
         #[test]
@@ -513,6 +683,22 @@ mod unix {
             )
             .expect("cancel succeeds");
             assert!(matches!(cancel, Response::TimerCancelled { .. }));
+            let diagnostics = send_request(
+                &socket,
+                &Request::Diagnostics {
+                    version: PROTOCOL_VERSION,
+                },
+            )
+            .expect("diagnostics succeeds");
+            assert!(matches!(
+                diagnostics,
+                Response::Diagnostics {
+                    phase: RuntimePhase::Ready,
+                    retained_events: 1,
+                    active_timers: 0,
+                    ..
+                }
+            ));
             let shutdown = send_request(
                 &socket,
                 &Request::Shutdown {
