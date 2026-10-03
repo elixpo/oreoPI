@@ -35,8 +35,9 @@ require a separate licence/provenance review.
 
 The initial cache candidates are pinned in `models/manifest.toml`. The sherpa
 candidate is English-only and documented upstream as suitable for Cortex-A7;
-only its roughly 44 MB INT8 runtime subset is retained. The Vosk fallback is a
-40 MB US-English model officially listed for Android and Raspberry Pi. The 36
-MB Indian-English Vosk model is excluded from the first comparison because its
+only its roughly 44 MB INT8 runtime subset is retained. The Vosk fallback has
+a 40 MB US-English archive, occupies 68 MB extracted, and is officially listed
+for Android and Raspberry Pi. The 36 MB Indian-English Vosk model is excluded
+from the first comparison because its
 published NPTEL word error rate is 49.05%, an excessive accuracy tradeoff for
 four megabytes of storage.

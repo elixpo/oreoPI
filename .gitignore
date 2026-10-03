@@ -1,8 +1,11 @@
 /target/
+/.venv/
+__pycache__/
 /.elixpo/*
 !/.elixpo/project.yml
 *.log
 *.wav
+/tests/audio/fixtures.local.json
 .env.local
 !.env.example
 /models/cache/*

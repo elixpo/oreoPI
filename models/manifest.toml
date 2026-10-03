@@ -16,6 +16,7 @@ retained_files = [
   "tokens.txt",
 ]
 upstream_digest = "not-published"
+acquired_sha256 = "9c559283e8498d3fe95913c79ca1cb454bb26281ac2b102b41306c7d752765d9"
 licence_review = "required-before-release"
 
 [[models]]
@@ -27,4 +28,5 @@ source = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
 archive_bytes = 41205931
 installed_directory = "vosk-model-small-en-us-0.15"
 upstream_digest = "not-published"
+acquired_sha256 = "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
 licence = "Apache-2.0"

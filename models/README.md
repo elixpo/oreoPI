@@ -10,7 +10,8 @@ The initial English-only STT candidates deliberately optimize for an SBC:
   fetcher downloads the official archive temporarily but retains only the INT8
   encoder/joiner, small decoder, and token table needed at runtime.
 - `vosk-model-small-en-us-0.15` is the low-resource fallback and comparison
-  baseline. Its complete directory is required by Vosk.
+  baseline. Its roughly 40 MB archive expands to 68 MB because its complete
+  directory is required by Vosk.
 
 Run `scripts/fetch-stt-models.sh all` from anywhere inside the checkout. The
 script checks the exact upstream archive byte count, records the acquired

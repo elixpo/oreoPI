@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "timer-five-minutes",
+      "wav": "fixtures/timer-five-minutes.wav",
+      "transcript": "set a timer for five minutes"
+    },
+    {
+      "id": "device-status",
+      "wav": "fixtures/device-status.wav",
+      "transcript": "what is the device status"
+    },
+    {
+      "id": "weather-kolkata",
+      "wav": "fixtures/weather-kolkata.wav",
+      "transcript": "what is the weather in Kolkata"
+    }
+  ]
+}
