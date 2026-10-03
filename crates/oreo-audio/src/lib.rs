@@ -3,6 +3,7 @@
 //! Raw PCM exists only in short-lived chunks. This crate has no persistence,
 //! network, credential, or model-loading API.
 
+mod converter;
 mod cpal_io;
 mod metrics;
 mod pipeline;
@@ -16,6 +17,7 @@ use std::fmt;
 
 use oreo_core::CancellationToken;
 
+pub use converter::PcmConverter;
 pub use cpal_io::{
     AudioDeviceSummary, AudioIoSnapshot, CaptureControl, CpalInputSource, CpalOutput,
     default_audio_devices,
@@ -30,6 +32,10 @@ pub use wav::WavSource;
 pub const MAX_CHANNELS: u16 = 2;
 pub const MIN_SAMPLE_RATE_HZ: u32 = 8_000;
 pub const MAX_SAMPLE_RATE_HZ: u32 = 48_000;
+pub const STT_FORMAT: AudioFormat = AudioFormat {
+    sample_rate_hz: 16_000,
+    channels: 1,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioFormat {

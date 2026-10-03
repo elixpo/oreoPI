@@ -26,6 +26,7 @@ bytes = "1.11"
 cpal = "0.18.0"
 futures-util = "0.3.34"
 reqwest = { version = "0.13.4", features = ["blocking", "form", "json", "stream"] }
+rubato = { version = "5.0.1", default-features = false }
 rusqlite = { version = "0.40.0", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

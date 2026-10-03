@@ -8,6 +8,7 @@ license-file.workspace = true
 [dependencies]
 cpal.workspace = true
 oreo-core = { path = "../oreo-core" }
+rubato.workspace = true
 
 [lints]
 workspace = true
