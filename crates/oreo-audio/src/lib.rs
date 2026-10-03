@@ -4,6 +4,7 @@
 //! network, credential, or model-loading API.
 
 mod pipeline;
+mod pronunciation;
 mod stream;
 mod vad;
 mod wav;
@@ -14,6 +15,7 @@ use std::fmt;
 use oreo_core::CancellationToken;
 
 pub use pipeline::{PipelinePhase, PushToTalkState};
+pub use pronunciation::normalize_for_speech;
 pub use stream::{SpeechChunker, transcribe_source};
 pub use vad::{EnergyVad, VadConfig, VadDecision};
 pub use wav::WavSource;

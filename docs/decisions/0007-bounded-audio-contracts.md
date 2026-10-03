@@ -22,5 +22,6 @@ fixture/fallback endpoint at 300 ms of silence with the default 20 ms frames.
 - Laptop and SBC backends share the same PCM and cancellation contracts.
 - CPAL, sherpa-onnx, Vosk, and PocketTTS can be benchmarked without changing
   the runtime-facing API.
-- Resampling, channel conversion, learned VAD, pronunciation, and latency
-  instrumentation remain explicit layers rather than hidden backend work.
+- Resampling, channel conversion, learned VAD, and latency instrumentation
+  remain explicit layers rather than hidden backend work. Deterministic
+  pronunciation is applied before any selected TTS backend.
