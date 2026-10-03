@@ -45,6 +45,10 @@ cargo run -p elixpo-cli -- ask --offline "What is running?"
 POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask "Hello Oreo"
 ```
 
+The first container checkpoint packages the same daemon and CLI for AMD64 and
+ARM64 without exposing a network port. See [container deployment](docs/container.md)
+for the non-root Compose workflow and multi-architecture build commands.
+
 `OREO_STATE_DIR` can override the local state location. Session journals store
 only bounded metadata and digests; prompts, response text, credentials, and
 tool payloads are not persisted.

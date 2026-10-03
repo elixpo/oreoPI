@@ -1,0 +1,16 @@
+**
+!Cargo.toml
+!Cargo.lock
+!Dockerfile
+!.dockerignore
+!LICENSE
+!LICENSES/
+!LICENSES/NOTICE
+!apps/
+!apps/**
+!crates/
+!crates/**
+!config/
+!config/**
+!deploy/
+!deploy/**

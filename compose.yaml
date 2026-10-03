@@ -1,0 +1,23 @@
+services:
+  oreo:
+    image: oreopi:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      OREO_STATE_DIR: /var/lib/oreo
+    volumes:
+      - oreo-state:/var/lib/oreo
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 10s
+
+volumes:
+  oreo-state:
