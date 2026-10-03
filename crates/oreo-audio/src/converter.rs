@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use oreo_core::CancellationToken;
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
@@ -5,7 +7,7 @@ use rubato::{
     WindowFunction,
 };
 
-use crate::{AudioError, AudioErrorKind, AudioFormat, AudioLimits, PcmChunk};
+use crate::{AudioError, AudioErrorKind, AudioFormat, AudioLimits, AudioSource, PcmChunk};
 
 const SINC_LENGTH: usize = 128;
 const OVERSAMPLING_FACTOR: usize = 128;
@@ -27,6 +29,107 @@ pub struct PcmConverter {
     total_input_frames: u64,
     emitted_output_frames: u64,
     finished: bool,
+}
+
+/// Adapts any bounded source to a fixed downstream PCM format.
+///
+/// Converted chunks are held only in a bounded transient queue. Pulling the
+/// next chunk drives conversion, so capture cannot run ahead of its consumer.
+pub struct ConvertingSource<S> {
+    source: S,
+    converter: PcmConverter,
+    queue: VecDeque<PcmChunk>,
+    queue_capacity: usize,
+    exhausted: bool,
+}
+
+impl<S: AudioSource> ConvertingSource<S> {
+    /// Wraps `source` and converts it to `output_format` as chunks are pulled.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported formats, invalid limits, or converter setup errors.
+    pub fn new(
+        source: S,
+        output_format: AudioFormat,
+        limits: AudioLimits,
+    ) -> Result<Self, AudioError> {
+        let limits = limits.validate()?;
+        let converter = PcmConverter::new(source.format(), output_format, limits)?;
+        Ok(Self {
+            source,
+            converter,
+            queue: VecDeque::with_capacity(limits.queue_capacity),
+            queue_capacity: limits.queue_capacity,
+            exhausted: false,
+        })
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> S {
+        self.source
+    }
+}
+
+impl<S: AudioSource> AudioSource for ConvertingSource<S> {
+    fn format(&self) -> AudioFormat {
+        self.converter.output_format()
+    }
+
+    fn next_chunk(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<PcmChunk>, AudioError> {
+        if cancellation.is_cancelled() {
+            self.queue.clear();
+            return Err(AudioError::new(
+                AudioErrorKind::Cancelled,
+                "audio conversion was cancelled",
+            ));
+        }
+        if let Some(chunk) = self.queue.pop_front() {
+            return Ok(Some(chunk));
+        }
+        if self.exhausted {
+            return Ok(None);
+        }
+
+        loop {
+            if let Some(chunk) = self.source.next_chunk(cancellation)? {
+                let queue = &mut self.queue;
+                let capacity = self.queue_capacity;
+                self.converter.push(&chunk, cancellation, &mut |chunk| {
+                    if queue.len() == capacity {
+                        return Err(AudioError::new(
+                            AudioErrorKind::Capacity,
+                            "converted audio queue is full",
+                        ));
+                    }
+                    queue.push_back(chunk);
+                    Ok(())
+                })?;
+                if let Some(chunk) = self.queue.pop_front() {
+                    return Ok(Some(chunk));
+                }
+                continue;
+            }
+
+            let queue = &mut self.queue;
+            let capacity = self.queue_capacity;
+            self.converter.finish(cancellation, &mut |chunk| {
+                if queue.len() == capacity {
+                    return Err(AudioError::new(
+                        AudioErrorKind::Capacity,
+                        "converted audio queue is full",
+                    ));
+                }
+                queue.push_back(chunk);
+                Ok(())
+            })?;
+            self.exhausted = true;
+            return Ok(self.queue.pop_front());
+        }
+    }
 }
 
 impl PcmConverter {
@@ -320,8 +423,13 @@ fn to_i16(sample: f32) -> i16 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use super::PcmConverter;
-    use crate::{AudioErrorKind, AudioFormat, AudioLimits, PcmChunk, STT_FORMAT};
+    use crate::{
+        AudioError, AudioErrorKind, AudioFormat, AudioLimits, AudioSource, ConvertingSource,
+        PcmChunk, STT_FORMAT,
+    };
     use oreo_core::CancellationToken;
 
     #[test]
@@ -457,5 +565,88 @@ mod tests {
 
         assert_eq!(output.len(), 17 * 6 * 2);
         assert!(output.chunks_exact(2).all(|frame| frame[0] == frame[1]));
+    }
+
+    struct TestSource {
+        format: AudioFormat,
+        chunks: VecDeque<PcmChunk>,
+    }
+
+    impl AudioSource for TestSource {
+        fn format(&self) -> AudioFormat {
+            self.format
+        }
+
+        fn next_chunk(
+            &mut self,
+            cancellation: &CancellationToken,
+        ) -> Result<Option<PcmChunk>, AudioError> {
+            if cancellation.is_cancelled() {
+                return Err(AudioError::new(
+                    AudioErrorKind::Cancelled,
+                    "fixture was cancelled",
+                ));
+            }
+            Ok(self.chunks.pop_front())
+        }
+    }
+
+    #[test]
+    fn converting_source_bridges_device_audio_to_stt_format() {
+        let input = AudioFormat {
+            sample_rate_hz: 48_000,
+            channels: 2,
+        };
+        let source = TestSource {
+            format: input,
+            chunks: [
+                PcmChunk::new(input, vec![2_000; 1_920]).expect("valid chunk"),
+                PcmChunk::new(input, vec![-2_000; 960]).expect("valid partial chunk"),
+            ]
+            .into(),
+        };
+        let mut source =
+            ConvertingSource::new(source, STT_FORMAT, AudioLimits::sbc()).expect("valid source");
+        let cancellation = CancellationToken::new();
+        let mut samples = 0;
+        while let Some(chunk) = source
+            .next_chunk(&cancellation)
+            .expect("conversion succeeds")
+        {
+            assert_eq!(chunk.format(), STT_FORMAT);
+            samples += chunk.samples().len();
+        }
+        assert_eq!(samples, 480);
+        assert!(
+            source
+                .next_chunk(&cancellation)
+                .expect("exhausted source remains stable")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn converting_source_discards_queued_audio_on_cancellation() {
+        let format = STT_FORMAT;
+        let source = TestSource {
+            format,
+            chunks: [PcmChunk::new(format, vec![1; 640]).expect("valid chunk")].into(),
+        };
+        let mut limits = AudioLimits::sbc();
+        limits.queue_capacity = 2;
+        let mut source =
+            ConvertingSource::new(source, format, limits).expect("valid converting source");
+        let cancellation = CancellationToken::new();
+        let first = source
+            .next_chunk(&cancellation)
+            .expect("first chunk converts")
+            .expect("first chunk exists");
+        assert_eq!(first.samples().len(), 320);
+
+        cancellation.cancel();
+        let error = source
+            .next_chunk(&cancellation)
+            .expect_err("queued audio is not returned after cancellation");
+        assert_eq!(error.kind, AudioErrorKind::Cancelled);
     }
 }

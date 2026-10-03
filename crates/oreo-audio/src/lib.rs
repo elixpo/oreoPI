@@ -17,7 +17,7 @@ use std::fmt;
 
 use oreo_core::CancellationToken;
 
-pub use converter::PcmConverter;
+pub use converter::{ConvertingSource, PcmConverter};
 pub use cpal_io::{
     AudioDeviceSummary, AudioIoSnapshot, CaptureControl, CpalInputSource, CpalOutput,
     default_audio_devices,
