@@ -12,7 +12,8 @@ the default SBC profile uses 20 ms frames, a 30-second capture limit, and a
 Capture, streaming STT, streaming TTS, and playback are separate cancellable
 interfaces. Push-to-talk lifecycle is an explicit state machine. WAV fixtures
 use a strict in-tree parser for deterministic tests, while live devices and ML
-engines remain replaceable adapters.
+engines remain replaceable adapters. A deterministic energy VAD provides a
+fixture/fallback endpoint at 300 ms of silence with the default 20 ms frames.
 
 ## Consequences
 
@@ -21,5 +22,5 @@ engines remain replaceable adapters.
 - Laptop and SBC backends share the same PCM and cancellation contracts.
 - CPAL, sherpa-onnx, Vosk, and PocketTTS can be benchmarked without changing
   the runtime-facing API.
-- Resampling, channel conversion, VAD, endpointing, pronunciation, and latency
-  instrumentation are explicit later layers rather than hidden backend work.
+- Resampling, channel conversion, learned VAD, pronunciation, and latency
+  instrumentation remain explicit layers rather than hidden backend work.

@@ -4,6 +4,8 @@
 //! network, credential, or model-loading API.
 
 mod pipeline;
+mod stream;
+mod vad;
 mod wav;
 
 use std::error::Error;
@@ -12,6 +14,8 @@ use std::fmt;
 use oreo_core::CancellationToken;
 
 pub use pipeline::{PipelinePhase, PushToTalkState};
+pub use stream::{SpeechChunker, transcribe_source};
+pub use vad::{EnergyVad, VadConfig, VadDecision};
 pub use wav::WavSource;
 
 pub const MAX_CHANNELS: u16 = 2;
@@ -48,6 +52,8 @@ pub struct AudioLimits {
     pub frame_ms: u16,
     pub max_capture_seconds: u16,
     pub queue_capacity: usize,
+    pub max_transcript_bytes: usize,
+    pub max_response_buffer_bytes: usize,
 }
 
 impl AudioLimits {
@@ -57,6 +63,8 @@ impl AudioLimits {
             frame_ms: 20,
             max_capture_seconds: 30,
             queue_capacity: 32,
+            max_transcript_bytes: 4_096,
+            max_response_buffer_bytes: 4_096,
         }
     }
 
@@ -69,6 +77,8 @@ impl AudioLimits {
         if !(10..=100).contains(&self.frame_ms)
             || !(1..=120).contains(&self.max_capture_seconds)
             || !(1..=256).contains(&self.queue_capacity)
+            || !(64..=65_536).contains(&self.max_transcript_bytes)
+            || !(64..=65_536).contains(&self.max_response_buffer_bytes)
         {
             return Err(AudioError::new(
                 AudioErrorKind::InvalidConfig,
@@ -242,6 +252,7 @@ pub enum AudioErrorKind {
     Cancelled,
     Input,
     Backend,
+    NoSpeech,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
