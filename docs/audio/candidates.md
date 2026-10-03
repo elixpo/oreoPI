@@ -10,7 +10,7 @@ and checksummed separately from application packages.
 | Layer | Primary candidate | Fallback | Benchmark focus |
 |---|---|---|---|
 | Capture/playback | [CPAL 0.18.2](https://github.com/RustAudio/cpal/releases/tag/v0.18.2), selected | Direct ALSA adapter only if CPAL measurements require it | PipeWire/PulseAudio/ALSA behavior, callback overruns, fixed-buffer latency, AMD64/ARM64 packaging |
-| Offline STT | [sherpa-onnx 1.13.8](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8) | [Vosk](https://alphacephei.com/vosk/) with a small language model | Accuracy on Oreo command fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
+| Offline STT | [sherpa-onnx 1.13.8](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8) with English-only 20M streaming Zipformer INT8 | [Vosk](https://alphacephei.com/vosk/) with `vosk-model-small-en-us-0.15` | Accuracy on Oreo command fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
 | Streaming TTS | [PocketTTS 3.3.0](https://github.com/kyutai-labs/pocket-tts/releases/tag/v3.3.0) | Selected only after the primary misses a hard gate | First-audio latency, real-time factor, RSS, cancellation, pronunciation, voice/model licensing, AMD64/ARM64 packaging |
 
 ## Selection rules
@@ -32,3 +32,11 @@ guidance targets mobile/Raspberry Pi-class systems, but its older native stack
 and accuracy must be measured against current sherpa-onnx models rather than
 assumed. PocketTTS source is MIT; the selected voice and model artefacts still
 require a separate licence/provenance review.
+
+The initial cache candidates are pinned in `models/manifest.toml`. The sherpa
+candidate is English-only and documented upstream as suitable for Cortex-A7;
+only its roughly 44 MB INT8 runtime subset is retained. The Vosk fallback is a
+40 MB US-English model officially listed for Android and Raspberry Pi. The 36
+MB Indian-English Vosk model is excluded from the first comparison because its
+published NPTEL word error rate is 49.05%, an excessive accuracy tradeoff for
+four megabytes of storage.

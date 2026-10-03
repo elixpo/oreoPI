@@ -5,3 +5,5 @@
 *.wav
 .env.local
 !.env.example
+/models/cache/*
+!/models/cache/.gitkeep
