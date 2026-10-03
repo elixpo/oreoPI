@@ -33,7 +33,10 @@ download() {
 record_digest() {
   local archive="$1"
   local model_id="$2"
-  sha256sum "$archive" > "$cache_dir/$model_id.sha256.local"
+  local checksum
+  checksum="$(sha256sum "$archive")"
+  printf '%s  %s.archive\n' "${checksum%% *}" "$model_id" \
+    > "$cache_dir/$model_id.sha256.local"
 }
 
 validate_member_paths() {
