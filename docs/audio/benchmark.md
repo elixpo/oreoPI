@@ -24,7 +24,7 @@ Create an isolated benchmark environment and install the pinned adapters:
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install "sherpa-onnx==1.13.8" "vosk==0.3.45"
+.venv/bin/python -m pip install "numpy==2.5.3" "sherpa-onnx==1.13.8" "vosk==0.3.45"
 ```
 
 Create the local manifest and fixture directory:
@@ -51,4 +51,5 @@ Run the dependency-free harness check, then both engine benchmarks:
 
 Use the same recordings, repetition count, and thread count for both reports.
 The default is five measured runs and one inference thread, matching the first
-SBC-oriented comparison.
+SBC-oriented comparison. Output variation is recorded as hypothesis variants
+and a mean WER across runs; it is a benchmark result rather than a fatal error.

@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import wave
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -49,10 +50,13 @@ class SherpaEngine:
     def __init__(self, model: Path, threads: int) -> None:
         try:
             import numpy as np
+        except ImportError as error:
+            raise RuntimeError("sherpa benchmark requires numpy==2.5.3") from error
+        try:
             import sherpa_onnx
         except ImportError as error:
             raise RuntimeError(
-                "sherpa benchmark requires sherpa-onnx and numpy"
+                "sherpa benchmark could not import sherpa-onnx==1.13.8"
             ) from error
 
         self._np = np
@@ -317,11 +321,14 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
                 raise RuntimeError("engine returned an oversized transcript")
             latencies.append(latency_ms)
             hypotheses.append(hypothesis)
-        if len(set(hypotheses)) != 1:
-            raise RuntimeError(f"fixture {fixture.fixture_id} was nondeterministic")
-        transcript_score = score(fixture.transcript, hypotheses[0])
-        total_errors += int(transcript_score["word_errors"])
-        total_reference_words += int(transcript_score["reference_words"])
+        hypothesis_counts = Counter(hypotheses)
+        representative = hypothesis_counts.most_common(1)[0][0]
+        transcript_score = score(fixture.transcript, representative)
+        run_scores = [score(fixture.transcript, hypothesis) for hypothesis in hypotheses]
+        fixture_errors = sum(int(run_score["word_errors"]) for run_score in run_scores)
+        reference_words = int(transcript_score["reference_words"])
+        total_errors += fixture_errors
+        total_reference_words += reference_words * arguments.repetitions
         all_latencies.extend(latencies)
         fixture_reports.append(
             {
@@ -329,8 +336,19 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
                 "wav_sha256": file_sha256(fixture.path),
                 "audio_seconds": fixture.duration_seconds,
                 "reference": fixture.transcript,
-                "hypothesis": hypotheses[0],
+                "hypothesis": representative,
+                "hypothesis_stable": len(hypothesis_counts) == 1,
+                "hypothesis_variants": [
+                    {
+                        "text": text,
+                        "count": count,
+                        "wer": score(fixture.transcript, text)["wer"],
+                    }
+                    for text, count in hypothesis_counts.most_common()
+                ],
                 **transcript_score,
+                "wer_mean": fixture_errors
+                / (reference_words * arguments.repetitions),
                 "latency_ms": {
                     "median": statistics.median(latencies),
                     "p95": percentile(latencies, 0.95),
