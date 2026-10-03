@@ -10,6 +10,8 @@ mod pipeline;
 mod pronunciation;
 mod stream;
 mod vad;
+#[cfg(feature = "vosk-stt")]
+mod vosk_stt;
 mod wav;
 
 use std::error::Error;
@@ -27,6 +29,8 @@ pub use pipeline::{PipelinePhase, PushToTalkState};
 pub use pronunciation::normalize_for_speech;
 pub use stream::{SpeechChunker, transcribe_source};
 pub use vad::{EnergyVad, VadConfig, VadDecision};
+#[cfg(feature = "vosk-stt")]
+pub use vosk_stt::VoskTranscriber;
 pub use wav::WavSource;
 
 pub const MAX_CHANNELS: u16 = 2;
@@ -211,6 +215,12 @@ pub trait StreamingTranscriber {
         chunk: &PcmChunk,
         cancellation: &CancellationToken,
     ) -> Result<(), AudioError>;
+
+    /// Discards the current utterance after capture or transcription fails.
+    ///
+    /// Stateful adapters override this to release per-utterance resources. The
+    /// loaded model or other reusable backend state should remain available.
+    fn abort(&mut self) {}
 
     /// Finalizes the utterance and returns bounded text.
     ///

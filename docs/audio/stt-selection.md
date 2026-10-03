@@ -37,3 +37,8 @@ These measurements cover cached file transcription, not endpoint latency or
 the complete microphone-to-intent path. The selection remains provisional
 until cancellation, soak, larger-corpus, live microphone, and AArch64 gates are
 recorded.
+
+Wake-word recognition is intentionally not part of the Vosk adapter. The first
+implementation remains push-to-talk and exposes Vosk only through Oreo's
+bounded `StreamingTranscriber` contract; a future wake-word layer can trigger
+capture without changing STT engine ownership.

@@ -5,10 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 
+[features]
+default = []
+vosk-stt = ["dep:vosk"]
+
 [dependencies]
 cpal.workspace = true
 oreo-core = { path = "../oreo-core" }
 rubato.workspace = true
+vosk = { workspace = true, optional = true }
 
 [lints]
 workspace = true

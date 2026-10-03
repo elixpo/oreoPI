@@ -53,3 +53,22 @@ Use the same recordings, repetition count, and thread count for both reports.
 The default is five measured runs and one inference thread, matching the first
 SBC-oriented comparison. Output variation is recorded as hypothesis variants
 and a mean WER across runs; it is a benchmark result rather than a fatal error.
+
+## Rust adapter smoke test
+
+The selected Vosk engine is optional so normal development builds do not need
+the native library. The local Python package already contains the matching
+`libvosk.so`; point the Rust linker and loader at it, then transcribe one of the
+same ignored fixtures through Oreo's bounded source, converter, and adapter:
+
+```bash
+export OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk"
+export LD_LIBRARY_PATH="$OREO_VOSK_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cargo run -p elixpo-cli --features vosk-stt -- audio transcribe-test tests/audio/fixtures/timer-five-minutes.wav
+```
+
+Set `OREO_VOSK_MODEL_DIR` only when the model is not at the default
+`models/cache/vosk-model-small-en-us-0.15` path. The command prints the final
+transcript and transcription time; it does not persist either the WAV or the
+transcript. Wake-word detection is deliberately outside this adapter and will
+be selected later.

@@ -1,4 +1,6 @@
 use std::env;
+#[cfg(feature = "vosk-stt")]
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -15,6 +17,8 @@ use oreo_audio::{
     AudioLimits, AudioOutput, AudioSource, CpalInputSource, CpalOutput, PcmChunk,
     default_audio_devices,
 };
+#[cfg(feature = "vosk-stt")]
+use oreo_audio::{ConvertingSource, STT_FORMAT, VoskTranscriber, WavSource, transcribe_source};
 use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig, StdoutSink};
 use oreo_local_api::{PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request};
 
@@ -353,11 +357,39 @@ fn audio_command(
             let seconds = diagnostic_seconds(seconds)?;
             playback_test(seconds)
         }
+        [command, wav_path] if command == "transcribe-test" => {
+            transcribe_test(PathBuf::from(wav_path))
+        }
         _ => Err(
-            "usage: elixpo audio <devices|capture-test <1-10 seconds>|playback-test <1-10 seconds>>"
+            "usage: elixpo audio <devices|capture-test <1-10 seconds>|playback-test <1-10 seconds>|transcribe-test <wav>>"
                 .into(),
         ),
     }
+}
+
+#[cfg(feature = "vosk-stt")]
+fn transcribe_test(wav_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let model_path = env::var_os("OREO_VOSK_MODEL_DIR")
+        .filter(|path| !path.is_empty())
+        .map_or_else(
+            || PathBuf::from("models/cache/vosk-model-small-en-us-0.15"),
+            PathBuf::from,
+        );
+    let limits = AudioLimits::sbc();
+    let wav = WavSource::read(File::open(wav_path)?, limits)?;
+    let mut source = ConvertingSource::new(wav, STT_FORMAT, limits)?;
+    let mut transcriber = VoskTranscriber::load(model_path, limits)?;
+    let cancellation = CancellationToken::new();
+    let started = Instant::now();
+    let transcript = transcribe_source(&mut source, &mut transcriber, limits, &cancellation)?;
+    println!("transcript: {transcript}");
+    println!("transcription_ms: {}", started.elapsed().as_millis());
+    Ok(())
+}
+
+#[cfg(not(feature = "vosk-stt"))]
+fn transcribe_test(_wav_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    Err("transcribe-test requires a build with --features vosk-stt".into())
 }
 
 fn diagnostic_seconds(value: &str) -> Result<u64, Box<dyn std::error::Error>> {

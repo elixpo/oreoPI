@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 
+[features]
+default = []
+vosk-stt = ["oreo-audio/vosk-stt"]
+
 [dependencies]
 oreo-agent = { path = "../../crates/oreo-agent" }
 oreo-audio = { path = "../../crates/oreo-audio" }

@@ -19,28 +19,37 @@ pub fn transcribe_source(
     let max_samples = limits.max_samples(format)?;
     let mut consumed_samples = 0_usize;
     transcriber.begin(format)?;
-    while let Some(chunk) = source.next_chunk(cancellation)? {
-        if cancellation.is_cancelled() {
-            return Err(AudioError::new(
-                AudioErrorKind::Cancelled,
-                "audio transcription was cancelled",
-            ));
+    let transcription = (|| {
+        while let Some(chunk) = source.next_chunk(cancellation)? {
+            if cancellation.is_cancelled() {
+                return Err(AudioError::new(
+                    AudioErrorKind::Cancelled,
+                    "audio transcription was cancelled",
+                ));
+            }
+            if chunk.format() != format {
+                return Err(AudioError::new(
+                    AudioErrorKind::UnsupportedFormat,
+                    "audio source changed format",
+                ));
+            }
+            consumed_samples = consumed_samples
+                .checked_add(chunk.samples().len())
+                .filter(|count| *count <= max_samples)
+                .ok_or_else(|| {
+                    AudioError::new(AudioErrorKind::Capacity, "audio capture exceeds its limit")
+                })?;
+            transcriber.push(&chunk, cancellation)?;
         }
-        if chunk.format() != format {
-            return Err(AudioError::new(
-                AudioErrorKind::UnsupportedFormat,
-                "audio source changed format",
-            ));
+        transcriber.finish(cancellation)
+    })();
+    let transcript = match transcription {
+        Ok(transcript) => transcript,
+        Err(error) => {
+            transcriber.abort();
+            return Err(error);
         }
-        consumed_samples = consumed_samples
-            .checked_add(chunk.samples().len())
-            .filter(|count| *count <= max_samples)
-            .ok_or_else(|| {
-                AudioError::new(AudioErrorKind::Capacity, "audio capture exceeds its limit")
-            })?;
-        transcriber.push(&chunk, cancellation)?;
-    }
-    let transcript = transcriber.finish(cancellation)?;
+    };
     if transcript.len() > limits.max_transcript_bytes {
         return Err(AudioError::new(
             AudioErrorKind::Capacity,
@@ -134,6 +143,7 @@ mod tests {
 
     struct CountingTranscriber {
         samples: usize,
+        aborted: bool,
     }
 
     impl StreamingTranscriber for CountingTranscriber {
@@ -152,6 +162,10 @@ mod tests {
 
         fn finish(&mut self, _cancellation: &CancellationToken) -> Result<String, AudioError> {
             Ok(format!("{} samples", self.samples))
+        }
+
+        fn abort(&mut self) {
+            self.aborted = true;
         }
     }
 
@@ -204,7 +218,10 @@ mod tests {
     fn wav_stream_reaches_transcriber_without_audio_retention() {
         let input = pcm_wav(640);
         let mut source = WavSource::read(input.as_slice(), AudioLimits::sbc()).expect("WAV opens");
-        let mut transcriber = CountingTranscriber { samples: 0 };
+        let mut transcriber = CountingTranscriber {
+            samples: 0,
+            aborted: false,
+        };
         let transcript = transcribe_source(
             &mut source,
             &mut transcriber,
@@ -222,7 +239,10 @@ mod tests {
             channels: 1,
         };
         let mut source = EndlessSource { format };
-        let mut transcriber = CountingTranscriber { samples: 0 };
+        let mut transcriber = CountingTranscriber {
+            samples: 0,
+            aborted: false,
+        };
         let limits = AudioLimits {
             max_capture_seconds: 1,
             ..AudioLimits::sbc()
@@ -235,6 +255,7 @@ mod tests {
         )
         .expect_err("unbounded source fails");
         assert_eq!(error.kind, AudioErrorKind::Capacity);
+        assert!(transcriber.aborted);
     }
 
     #[test]
