@@ -3,6 +3,7 @@
 //! Raw PCM exists only in short-lived chunks. This crate has no persistence,
 //! network, credential, or model-loading API.
 
+mod metrics;
 mod pipeline;
 mod pronunciation;
 mod stream;
@@ -14,6 +15,7 @@ use std::fmt;
 
 use oreo_core::CancellationToken;
 
+pub use metrics::{LatencyMetric, LatencyReport, LatencyTargets, LatencyWindow};
 pub use pipeline::{PipelinePhase, PushToTalkState};
 pub use pronunciation::normalize_for_speech;
 pub use stream::{SpeechChunker, transcribe_source};
