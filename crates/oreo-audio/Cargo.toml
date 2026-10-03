@@ -6,6 +6,7 @@ rust-version.workspace = true
 license-file.workspace = true
 
 [dependencies]
+cpal.workspace = true
 oreo-core = { path = "../oreo-core" }
 
 [lints]

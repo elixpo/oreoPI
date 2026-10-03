@@ -34,6 +34,9 @@ cargo test --workspace --all-targets
 cargo run -p oreo-daemon
 cargo run -p elixpo-cli -- status
 cargo run -p elixpo-cli -- diagnostics
+cargo run -p elixpo-cli -- audio devices
+cargo run -p elixpo-cli -- audio capture-test 3
+cargo run -p elixpo-cli -- audio playback-test 2
 cargo run -p elixpo-cli -- tools
 cargo run -p elixpo-cli -- timer set tea 300
 cargo run -p elixpo-cli -- timer list

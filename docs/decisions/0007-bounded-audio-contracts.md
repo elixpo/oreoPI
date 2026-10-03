@@ -14,6 +14,8 @@ interfaces. Push-to-talk lifecycle is an explicit state machine. WAV fixtures
 use a strict in-tree parser for deterministic tests, while live devices and ML
 engines remain replaceable adapters. A deterministic energy VAD provides a
 fixture/fallback endpoint at 300 ms of silence with the default 20 ms frames.
+CPAL 0.18.2 is the first live device adapter; its callbacks use preallocated
+bounded pools and never block on the runtime consumer.
 
 ## Consequences
 

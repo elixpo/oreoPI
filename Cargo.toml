@@ -23,6 +23,7 @@ license-file = "LICENSE"
 [workspace.dependencies]
 anyhow = "1.0.100"
 bytes = "1.11"
+cpal = "0.18.0"
 futures-util = "0.3.34"
 reqwest = { version = "0.13.4", features = ["blocking", "form", "json", "stream"] }
 rusqlite = { version = "0.40.0", features = ["bundled"] }

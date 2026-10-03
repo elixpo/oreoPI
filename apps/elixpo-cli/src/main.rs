@@ -3,13 +3,17 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use oreo_agent::provider::{PollinationsConfig, PollinationsProvider};
 use oreo_agent::tools::CancellationToken as AgentCancellation;
 use oreo_agent::{
     AgentEvent, AgentProfile, CapabilityRegistry, DenyApprovalUi, DeviceStatus, EventSink,
     OreoAgent, inspect_memory, list_memory, register_device_status,
+};
+use oreo_audio::{
+    AudioLimits, AudioOutput, AudioSource, CpalInputSource, CpalOutput, PcmChunk,
+    default_audio_devices,
 };
 use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig, StdoutSink};
 use oreo_local_api::{PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request};
@@ -91,13 +95,14 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
         Some("daemon") => daemon_command(arguments),
         Some("memory") => memory_command(arguments),
         Some("diagnostics") => diagnostics_command(arguments),
+        Some("audio") => audio_command(arguments),
         Some("--version" | "-V") => {
             println!("elixpo {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         _ => {
             Err(
-                "usage: elixpo <status|ask [--offline]|tools|timer|daemon|memory|diagnostics|--version>"
+                "usage: elixpo <status|ask [--offline]|tools|timer|daemon|memory|diagnostics|audio|--version>"
                     .into(),
             )
         }
@@ -320,6 +325,129 @@ const fn phase_name(phase: RuntimePhase) -> &'static str {
         RuntimePhase::Stopping => "stopping",
         RuntimePhase::Faulted => "faulted",
     }
+}
+
+fn audio_command(
+    arguments: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let arguments = arguments.collect::<Vec<_>>();
+    match arguments.as_slice() {
+        [command] if command == "devices" => {
+            let devices = default_audio_devices()?;
+            println!("host: {}", devices.host);
+            println!(
+                "default_input: {}",
+                devices.default_input.as_deref().unwrap_or("unavailable")
+            );
+            println!(
+                "default_output: {}",
+                devices.default_output.as_deref().unwrap_or("unavailable")
+            );
+            Ok(())
+        }
+        [command, seconds] if command == "capture-test" => {
+            let seconds = diagnostic_seconds(seconds)?;
+            capture_test(seconds)
+        }
+        [command, seconds] if command == "playback-test" => {
+            let seconds = diagnostic_seconds(seconds)?;
+            playback_test(seconds)
+        }
+        _ => Err(
+            "usage: elixpo audio <devices|capture-test <1-10 seconds>|playback-test <1-10 seconds>>"
+                .into(),
+        ),
+    }
+}
+
+fn diagnostic_seconds(value: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| "audio diagnostic duration must be 1-10 seconds")?;
+    if !(1..=10).contains(&seconds) {
+        return Err("audio diagnostic duration must be 1-10 seconds".into());
+    }
+    Ok(seconds)
+}
+
+fn capture_test(seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let mut source = CpalInputSource::open_default(AudioLimits::sbc())?;
+    let format = source.format();
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let cancellation = CancellationToken::new();
+    let mut chunks = 0_u64;
+    let mut samples = 0_u64;
+    let mut amplitude_sum = 0_u64;
+    let mut peak = 0_u16;
+    while Instant::now() < deadline {
+        let Some(chunk) = source.next_chunk(&cancellation)? else {
+            break;
+        };
+        chunks = chunks.saturating_add(1);
+        samples = samples.saturating_add(u64::try_from(chunk.samples().len()).unwrap_or(u64::MAX));
+        for sample in chunk.samples() {
+            let amplitude = sample.unsigned_abs();
+            amplitude_sum = amplitude_sum.saturating_add(u64::from(amplitude));
+            peak = peak.max(amplitude);
+        }
+    }
+    source.control().stop();
+    if samples == 0 {
+        return Err("microphone produced no samples".into());
+    }
+    let stats = source.stats();
+    println!(
+        "format: {} Hz, {} channel(s)",
+        format.sample_rate_hz, format.channels
+    );
+    println!("chunks: {chunks}");
+    println!("mean_amplitude: {}", amplitude_sum / samples);
+    println!("peak_amplitude: {peak}");
+    println!("dropped_chunks: {}", stats.dropped_chunks);
+    println!("stream_errors: {}", stats.stream_errors);
+    if stats.dropped_chunks != 0 || stats.stream_errors != 0 {
+        return Err("microphone diagnostic detected lost buffers or stream errors".into());
+    }
+    Ok(())
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn playback_test(seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let mut output = CpalOutput::open_default(AudioLimits::sbc())?;
+    let format = output.native_format();
+    output.begin(format)?;
+    let cancellation = CancellationToken::new();
+    let frames_per_chunk = usize::try_from(format.sample_rate_hz)? / 50;
+    let samples_per_chunk = frames_per_chunk
+        .checked_mul(usize::from(format.channels))
+        .ok_or("speaker frame is too large")?;
+    let chunk_count = seconds.saturating_mul(50);
+    let mut phase = 0_f32;
+    let phase_step = 440_f32 * 2_f32 * std::f32::consts::PI / format.sample_rate_hz as f32;
+    for _ in 0..chunk_count {
+        let mut samples = Vec::with_capacity(samples_per_chunk);
+        for _ in 0..frames_per_chunk {
+            let value = (phase.sin() * 8_000_f32) as i16;
+            phase = (phase + phase_step) % (2_f32 * std::f32::consts::PI);
+            samples.extend(std::iter::repeat_n(value, usize::from(format.channels)));
+        }
+        output.write(&PcmChunk::new(format, samples)?, &cancellation)?;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let stats = output.stats();
+    output.stop();
+    println!(
+        "format: {} Hz, {} channel(s)",
+        format.sample_rate_hz, format.channels
+    );
+    println!("played_samples: {}", stats.played_samples);
+    println!("underrun_callbacks: {}", stats.underrun_callbacks);
+    println!("stream_errors: {}", stats.stream_errors);
+    if stats.stream_errors != 0 {
+        return Err("speaker diagnostic detected stream errors".into());
+    }
+    Ok(())
 }
 
 fn daemon_request(request: &Request) -> Result<Response, Box<dyn std::error::Error>> {

@@ -3,6 +3,9 @@
 FROM rust:1.95-slim-bookworm AS builder
 
 WORKDIR /src
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libasound2-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY apps ./apps
 COPY crates ./crates
@@ -17,7 +20,7 @@ LABEL org.opencontainers.image.source="https://github.com/elixpo/oreoPI"
 LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates \
+    && apt-get install --yes --no-install-recommends ca-certificates libasound2 \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -m 0700 -o 10001 -g 10001 /var/lib/oreo
 

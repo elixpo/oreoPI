@@ -3,6 +3,7 @@
 //! Raw PCM exists only in short-lived chunks. This crate has no persistence,
 //! network, credential, or model-loading API.
 
+mod cpal_io;
 mod metrics;
 mod pipeline;
 mod pronunciation;
@@ -15,6 +16,10 @@ use std::fmt;
 
 use oreo_core::CancellationToken;
 
+pub use cpal_io::{
+    AudioDeviceSummary, AudioIoSnapshot, CaptureControl, CpalInputSource, CpalOutput,
+    default_audio_devices,
+};
 pub use metrics::{LatencyMetric, LatencyReport, LatencyTargets, LatencyWindow};
 pub use pipeline::{PipelinePhase, PushToTalkState};
 pub use pronunciation::normalize_for_speech;
