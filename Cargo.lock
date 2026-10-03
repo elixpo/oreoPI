@@ -868,6 +868,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "oreo-audio"
+version = "0.1.0"
+dependencies = [
+ "oreo-core",
+]
+
+[[package]]
 name = "oreo-core"
 version = "0.1.0"
 

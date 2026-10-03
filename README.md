@@ -64,7 +64,9 @@ without exposing private content.
 - Normal deterministic commands never require AI.
 - The audio loop will never wait on the model, website, or a network tool.
 - Models cannot grant permissions or directly control hardware.
-- Raw audio and credentials are never persisted in memory or logs.
+- Raw audio is transient and bounded; it never enters persistent memory,
+  session journals, or logs.
+- Credentials never enter local state, session journals, or logs.
 - The local runtime remains useful when every network feature fails.
 - Affect changes presentation, never truth, safety, or permissions.
 - Queues, model output, sessions, and tool output are bounded.

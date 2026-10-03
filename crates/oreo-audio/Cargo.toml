@@ -1,0 +1,12 @@
+[package]
+name = "oreo-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+oreo-core = { path = "../oreo-core" }
+
+[lints]
+workspace = true
