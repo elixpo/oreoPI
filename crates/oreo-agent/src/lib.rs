@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crumb_agent::{
-    AgentMode, AgentSession, ApprovalBroker, CancellationToken, SessionId, SessionJournal, ToolHost,
+    AgentMode, AgentSession, ApprovalBroker, CancellationToken, SessionId, SessionJournal,
+    ToolHost, TurnStatus, export_session, list_sessions,
 };
 use crumb_harness::{
     Conversation, EventSink as CrumbEventSink, HarnessErrorKind, HarnessEvent, HarnessLimits,
@@ -113,6 +114,71 @@ pub struct AgentResponse {
     pub usage: TokenUsage,
     pub model_rounds: usize,
     pub tool_calls: usize,
+}
+
+/// Prompt-free metadata exposed by Oreo's user-owned memory inspector.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemorySummary {
+    pub id: String,
+    pub archived: bool,
+    pub mode: &'static str,
+    pub started_at_ms: u64,
+    pub last_event_at_ms: u64,
+    pub turns: u32,
+    pub last_status: Option<&'static str>,
+}
+
+/// Bounded inspection result for one redacted session journal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemoryInspection {
+    pub summary: MemorySummary,
+    pub retained_events: usize,
+}
+
+/// Lists prompt-free agent memory summaries newest-first.
+///
+/// # Errors
+///
+/// Returns a redacted session error when the journal root cannot be read.
+pub fn list_memory(root: impl AsRef<Path>) -> Result<Vec<MemorySummary>, AgentError> {
+    list_sessions(root.as_ref())
+        .map(|summaries| summaries.iter().map(memory_summary).collect())
+        .map_err(|_| AgentError::new(AgentErrorKind::Session, "agent memory is unavailable"))
+}
+
+/// Inspects one session without exposing prompts, responses, or tool payloads.
+///
+/// # Errors
+///
+/// Returns a redacted session error for an invalid, missing, or damaged journal.
+pub fn inspect_memory(root: impl AsRef<Path>, id: &str) -> Result<MemoryInspection, AgentError> {
+    let export = export_session(root.as_ref(), id)
+        .map_err(|_| AgentError::new(AgentErrorKind::Session, "agent memory is unavailable"))?;
+    Ok(MemoryInspection {
+        summary: memory_summary(&export.summary),
+        retained_events: export.events.len(),
+    })
+}
+
+fn memory_summary(summary: &crumb_agent::SessionSummary) -> MemorySummary {
+    MemorySummary {
+        id: summary.id.as_str().to_owned(),
+        archived: summary.archived,
+        mode: match summary.mode {
+            AgentMode::Auto => "auto",
+            AgentMode::Negotiate => "negotiate",
+            AgentMode::Plan => "plan",
+        },
+        started_at_ms: summary.started_at_ms,
+        last_event_at_ms: summary.last_event_at_ms,
+        turns: summary.turns,
+        last_status: summary.last_status.map(|status| match status {
+            TurnStatus::Complete => "complete",
+            TurnStatus::Cancelled => "cancelled",
+            TurnStatus::Failed => "failed",
+            TurnStatus::LimitReached => "limit_reached",
+        }),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -296,7 +362,7 @@ mod tests {
         LlmProvider, ModelInfo, ProviderError, ProviderErrorKind, ProviderFuture,
     };
 
-    use super::{AgentEvent, AgentProfile, OreoAgent};
+    use super::{AgentEvent, AgentProfile, OreoAgent, inspect_memory, list_memory};
 
     struct FakeProvider {
         events: Mutex<VecDeque<ChatEvent>>,
@@ -389,6 +455,16 @@ mod tests {
             requests[0].messages[1].content,
             "Trusted context:\nLocale: en-IN"
         );
+        drop(requests);
+
+        let memories = list_memory(root.path()).expect("memory lists");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].id, "oreo-test");
+        assert_eq!(memories[0].turns, 1);
+        assert_eq!(memories[0].last_status, Some("complete"));
+        let inspection = inspect_memory(root.path(), "oreo-test").expect("memory inspects");
+        assert_eq!(inspection.summary, memories[0]);
+        assert_eq!(inspection.retained_events, 3);
     }
 
     #[test]

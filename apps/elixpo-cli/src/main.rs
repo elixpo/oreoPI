@@ -9,7 +9,7 @@ use oreo_agent::provider::{PollinationsConfig, PollinationsProvider};
 use oreo_agent::tools::CancellationToken as AgentCancellation;
 use oreo_agent::{
     AgentEvent, AgentProfile, CapabilityRegistry, DenyApprovalUi, DeviceStatus, EventSink,
-    OreoAgent, register_device_status,
+    OreoAgent, inspect_memory, list_memory, register_device_status,
 };
 use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig, StdoutSink};
 use oreo_local_api::{PROTOCOL_VERSION, Request, Response, send_request};
@@ -89,11 +89,14 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
         }
         Some("timer") => timer_command(arguments),
         Some("daemon") => daemon_command(arguments),
+        Some("memory") => memory_command(arguments),
         Some("--version" | "-V") => {
             println!("elixpo {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => Err("usage: elixpo <status|ask [--offline]|tools|timer|daemon|--version>".into()),
+        _ => {
+            Err("usage: elixpo <status|ask [--offline]|tools|timer|daemon|memory|--version>".into())
+        }
     }
 }
 
@@ -229,6 +232,47 @@ fn daemon_command(
             response => unexpected_response(&response),
         },
         _ => Err("usage: elixpo daemon stop".into()),
+    }
+}
+
+fn memory_command(
+    arguments: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match arguments.collect::<Vec<_>>().as_slice() {
+        [command] if command == "list" => {
+            let memories = list_memory(session_root()?)?;
+            if memories.is_empty() {
+                println!("No agent memories.");
+            } else {
+                for memory in memories {
+                    println!(
+                        "{}\tturns={}\tstatus={}\tmode={}\tarchived={}",
+                        memory.id,
+                        memory.turns,
+                        memory.last_status.unwrap_or("none"),
+                        memory.mode,
+                        memory.archived
+                    );
+                }
+            }
+            Ok(())
+        }
+        [command, id] if command == "inspect" => {
+            let memory = inspect_memory(session_root()?, id)?;
+            println!("id: {}", memory.summary.id);
+            println!("mode: {}", memory.summary.mode);
+            println!("archived: {}", memory.summary.archived);
+            println!("turns: {}", memory.summary.turns);
+            println!(
+                "last_status: {}",
+                memory.summary.last_status.unwrap_or("none")
+            );
+            println!("started_at_ms: {}", memory.summary.started_at_ms);
+            println!("last_event_at_ms: {}", memory.summary.last_event_at_ms);
+            println!("retained_metadata_events: {}", memory.retained_events);
+            Ok(())
+        }
+        _ => Err("usage: elixpo memory <list|inspect <id>>".into()),
     }
 }
 

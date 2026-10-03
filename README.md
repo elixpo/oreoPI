@@ -35,6 +35,8 @@ cargo run -p elixpo-cli -- tools
 cargo run -p elixpo-cli -- timer set tea 300
 cargo run -p elixpo-cli -- timer list
 cargo run -p elixpo-cli -- timer cancel tea
+cargo run -p elixpo-cli -- memory list
+cargo run -p elixpo-cli -- memory inspect <session-id>
 cargo run -p elixpo-cli -- daemon stop
 cargo run -p elixpo-cli -- ask --offline "What is running?"
 POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask "Hello Oreo"
