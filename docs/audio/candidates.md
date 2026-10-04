@@ -11,7 +11,7 @@ and checksummed separately from application packages.
 |---|---|---|---|
 | Capture/playback | [CPAL 0.18.2](https://github.com/RustAudio/cpal/releases/tag/v0.18.2), selected | Direct ALSA adapter only if CPAL measurements require it | PipeWire/PulseAudio/ALSA behavior, callback overruns, fixed-buffer latency, AMD64/ARM64 packaging |
 | Offline STT | [Vosk 0.3.45](https://alphacephei.com/vosk/) with `vosk-model-small-en-us-0.15`, selected for the laptop profile | [sherpa-onnx 1.13.8](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8) with English-only 20M streaming Zipformer INT8 as the resource fallback | Accuracy on Oreo command fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
-| Streaming TTS | [PocketTTS 3.3.0](https://github.com/kyutai-labs/pocket-tts/releases/tag/v3.3.0), six-layer English model with dynamic int8 | Selected only after the primary misses a hard gate | First-audio latency, real-time factor, RSS, cancellation, pronunciation, voice/model licensing, AMD64/ARM64 packaging |
+| Streaming TTS | PocketTTS 3.3.0 Python reference, performance validated but too memory-heavy for the device profile | [sherpa-onnx 1.13.8](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8) PocketTTS int8 runtime under measurement | First-audio latency, real-time factor, RSS, cancellation, pronunciation, voice/model licensing, AMD64/ARM64 packaging |
 
 ## Selection rules
 
@@ -42,6 +42,13 @@ candidate until Oreo measures warm first audio below 500 ms p95, faster-than-
 real-time generation, bounded cancellation, and acceptable spoken output on
 the same laptop. The model remains loaded between turns; cold model and voice
 load time is reported separately from the conversational path.
+
+The offline laptop pass measured 105 ms warm first-audio p95 and 8.50x median
+real-time generation, but the Python process loaded at 960,784 KiB RSS and
+peaked at 1,055,640 KiB. That is too close to the 1,200 MiB whole-device hard
+limit to select the PyTorch runtime. The official sherpa-onnx Rust/ONNX path is
+therefore measured next using its 98 MB int8 archive and the identical text
+fixtures. See `docs/audio/tts-evaluation.md` for the full interpretation.
 
 The initial cache candidates are pinned in `models/manifest.toml`. The sherpa
 candidate is English-only and documented upstream as suitable for Cortex-A7;

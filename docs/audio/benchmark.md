@@ -145,3 +145,30 @@ time factor above 1.0, successful cancellation, and no invalid samples. Listen
 to every first-run WAV for intelligibility and pronunciation; numeric speed
 results cannot approve voice quality. Peak RSS is recorded now and compared
 against the final daemon/SBC memory budget before selection.
+
+### Embedded sherpa-onnx comparison
+
+The Python reference passes the timing gates but consumes about one GiB RSS.
+Before integrating it, compare the official sherpa-onnx int8 conversion using
+the same phrases and metrics. Downloading and extracting the checksum-pinned
+98 MB archive is the long step:
+
+```bash
+rtk ./scripts/fetch-tts-models.sh
+```
+
+The existing `sherpa-onnx==1.13.8` benchmark package can then measure its
+PocketTTS backend. This run uses the archive's bundled reference WAV only for
+runtime comparison; it is not the final product voice.
+
+```bash
+rtk .venv/bin/python scripts/benchmark-tts.py run \
+  --engine sherpa-onnx \
+  --output target/audio-bench/sherpa-pocket-tts.json \
+  --save-audio target/audio-bench/sherpa-pocket-tts-wav
+```
+
+Do not add the Rust dependency until this report demonstrates materially lower
+RSS, acceptable first-audio latency, correct cancellation, and acceptable
+spoken output. This avoids committing the daemon to a native runtime based on
+archive size alone.

@@ -40,6 +40,11 @@ def parse_arguments() -> argparse.Namespace:
 
     run = subcommands.add_parser("run", help="run the PocketTTS benchmark")
     run.add_argument(
+        "--engine",
+        choices=("pocket-python", "sherpa-onnx"),
+        default="pocket-python",
+    )
+    run.add_argument(
         "--manifest",
         type=Path,
         default=repo_root / "tests/audio/tts-fixtures.json",
@@ -47,6 +52,8 @@ def parse_arguments() -> argparse.Namespace:
     run.add_argument("--repetitions", type=int, default=3)
     run.add_argument("--threads", type=int, default=2)
     run.add_argument("--voice", default="alba")
+    run.add_argument("--model", type=Path)
+    run.add_argument("--reference-audio", type=Path)
     run.add_argument("--output", type=Path)
     run.add_argument("--save-audio", type=Path)
     run.add_argument(
@@ -114,7 +121,14 @@ def resident_memory_kib() -> int:
 def write_wav(path: Path, chunks: list[object], sample_rate: int) -> None:
     import numpy as np
 
-    samples = np.concatenate([chunk.detach().cpu().numpy() for chunk in chunks])
+    samples = np.concatenate(
+        [
+            chunk.detach().cpu().numpy()
+            if hasattr(chunk, "detach")
+            else np.asarray(chunk)
+            for chunk in chunks
+        ]
+    )
     pcm = (np.clip(samples, -1.0, 1.0) * 32_767).astype("<i2")
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as output:
@@ -135,11 +149,209 @@ def run_self_test() -> None:
     print("TTS benchmark self-test passed")
 
 
+def load_pcm16_wav(path: Path) -> tuple[object, int]:
+    import numpy as np
+
+    with wave.open(str(path), "rb") as audio:
+        if (
+            audio.getnchannels() != 1
+            or audio.getsampwidth() != 2
+            or audio.getcomptype() != "NONE"
+        ):
+            raise ValueError("reference audio must be mono PCM16 WAV")
+        sample_rate = audio.getframerate()
+        samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2")
+    return samples.astype(np.float32) / 32_768.0, sample_rate
+
+
+def cached_digest(path: Path) -> str:
+    parts = path.read_text(encoding="utf-8").split()
+    if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+        raise ValueError(f"invalid cached digest file: {path.name}")
+    return parts[0]
+
+
+def run_sherpa_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
+    try:
+        import numpy as np
+        import sherpa_onnx
+    except ImportError as error:
+        raise RuntimeError(
+            "sherpa benchmark requires sherpa-onnx==1.13.8 and numpy"
+        ) from error
+
+    installed = importlib.metadata.version("sherpa-onnx")
+    if installed != "1.13.8":
+        raise RuntimeError(
+            f"expected sherpa-onnx==1.13.8, found sherpa-onnx=={installed}"
+        )
+    model_id = "sherpa-onnx-pocket-tts-int8-2026-01-26"
+    model = (
+        arguments.model or arguments.repo_root / "models/cache" / model_id
+    ).resolve()
+    reference_audio_path = (
+        arguments.reference_audio or model / "test_wavs/bria.wav"
+    ).resolve()
+    required = {
+        "lm_flow": model / "lm_flow.int8.onnx",
+        "lm_main": model / "lm_main.int8.onnx",
+        "encoder": model / "encoder.onnx",
+        "decoder": model / "decoder.int8.onnx",
+        "text_conditioner": model / "text_conditioner.onnx",
+        "vocab_json": model / "vocab.json",
+        "token_scores_json": model / "token_scores.json",
+    }
+    if not model.is_dir() or any(not path.is_file() for path in required.values()):
+        raise ValueError(f"sherpa PocketTTS model is incomplete: {model}")
+    if not reference_audio_path.is_file():
+        raise ValueError(f"reference audio does not exist: {reference_audio_path}")
+    reference_audio, reference_sample_rate = load_pcm16_wav(reference_audio_path)
+    fixtures = load_fixtures(arguments.manifest.resolve())
+
+    pocket = sherpa_onnx.OfflineTtsPocketModelConfig(
+        **{name: str(path) for name, path in required.items()},
+        voice_embedding_cache_capacity=1,
+    )
+    config = sherpa_onnx.OfflineTtsConfig(
+        model=sherpa_onnx.OfflineTtsModelConfig(
+            pocket=pocket,
+            num_threads=arguments.threads,
+            debug=False,
+            provider="cpu",
+        )
+    )
+    if not config.validate():
+        raise RuntimeError("sherpa PocketTTS configuration is invalid")
+
+    rss_before_load = resident_memory_kib()
+    load_started = time.monotonic()
+    model_instance = sherpa_onnx.OfflineTts(config)
+    model_load_ms = (time.monotonic() - load_started) * 1_000
+    if model_instance.sample_rate != SAMPLE_RATE:
+        raise RuntimeError(
+            f"expected {SAMPLE_RATE} Hz output, model reports "
+            f"{model_instance.sample_rate} Hz"
+        )
+    rss_after_load = resident_memory_kib()
+
+    generation_config = sherpa_onnx.GenerationConfig()
+    generation_config.reference_audio = reference_audio
+    generation_config.reference_sample_rate = reference_sample_rate
+    generation_config.num_steps = 5
+
+    runs: list[dict[str, object]] = []
+    for repetition in range(arguments.repetitions):
+        for fixture in fixtures:
+            started = time.monotonic()
+            first_audio_ms: float | None = None
+            callback_chunks: list[object] = []
+
+            def receive(samples: object, _progress: float) -> int:
+                nonlocal first_audio_ms
+                values = np.asarray(samples)
+                if values.ndim != 1 or values.size == 0:
+                    raise RuntimeError("sherpa PocketTTS emitted an invalid chunk")
+                if not bool(np.isfinite(values).all()):
+                    raise RuntimeError("sherpa PocketTTS emitted non-finite samples")
+                if first_audio_ms is None:
+                    first_audio_ms = (time.monotonic() - started) * 1_000
+                callback_chunks.append(values.copy())
+                return 1
+
+            audio = model_instance.generate(fixture.text, generation_config, receive)
+            generation_ms = (time.monotonic() - started) * 1_000
+            samples = np.asarray(audio.samples)
+            if first_audio_ms is None or samples.ndim != 1 or samples.size == 0:
+                raise RuntimeError("sherpa PocketTTS emitted no audio")
+            if not bool(np.isfinite(samples).all()):
+                raise RuntimeError("sherpa PocketTTS emitted non-finite output")
+            audio_seconds = samples.size / audio.sample_rate
+            result = {
+                "fixture_id": fixture.fixture_id,
+                "repetition": repetition + 1,
+                "first_audio_ms": round(first_audio_ms, 3),
+                "generation_ms": round(generation_ms, 3),
+                "audio_seconds": round(audio_seconds, 4),
+                "realtime_factor": round(audio_seconds / (generation_ms / 1_000), 4),
+                "chunks": len(callback_chunks),
+                "samples": samples.size,
+                "rss_kib": resident_memory_kib(),
+            }
+            runs.append(result)
+            print(
+                f"{fixture.fixture_id} run {repetition + 1}: "
+                f"first={first_audio_ms:.0f} ms rtf={result['realtime_factor']}x"
+            )
+            if arguments.save_audio is not None and repetition == 0:
+                write_wav(
+                    arguments.save_audio / f"{fixture.fixture_id}.wav",
+                    [samples],
+                    audio.sample_rate,
+                )
+
+    cancellation_callbacks = 0
+    cancellation_first_samples = 0
+    cancellation_started = time.monotonic()
+
+    def cancel_after_first(samples: object, _progress: float) -> int:
+        nonlocal cancellation_callbacks, cancellation_first_samples
+        cancellation_callbacks += 1
+        cancellation_first_samples = int(np.asarray(samples).size)
+        return 0
+
+    model_instance.generate(
+        fixtures[-1].text, generation_config, cancel_after_first
+    )
+    cancellation_ms = (time.monotonic() - cancellation_started) * 1_000
+    if cancellation_callbacks != 1:
+        raise RuntimeError("sherpa PocketTTS did not stop after cancellation")
+
+    first_audio_samples = [float(run["first_audio_ms"]) for run in runs]
+    generation_samples = [float(run["generation_ms"]) for run in runs]
+    realtime_factors = [float(run["realtime_factor"]) for run in runs]
+    digest_path = arguments.repo_root / "models/cache" / f"{model_id}.sha256.local"
+    return {
+        "schema_version": 1,
+        "engine": "sherpa-onnx-pocket-tts",
+        "package_version": installed,
+        "language": "english",
+        "voice": reference_audio_path.name,
+        "quantized": True,
+        "model_archive_sha256": cached_digest(digest_path),
+        "sample_rate": model_instance.sample_rate,
+        "threads": arguments.threads,
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "cache_directory": str(model.relative_to(arguments.repo_root)),
+        "model_load_ms": round(model_load_ms, 3),
+        "voice_load_ms": None,
+        "rss_before_load_kib": rss_before_load,
+        "rss_after_load_kib": rss_after_load,
+        "rss_model_growth_kib": max(0, rss_after_load - rss_before_load),
+        "summary": {
+            "runs": len(runs),
+            "first_audio_p50_ms": round(statistics.median(first_audio_samples), 3),
+            "first_audio_p95_ms": round(percentile(first_audio_samples, 0.95), 3),
+            "generation_p95_ms": round(percentile(generation_samples, 0.95), 3),
+            "realtime_factor_median": round(statistics.median(realtime_factors), 4),
+            "peak_rss_kib": max(int(run["rss_kib"]) for run in runs),
+        },
+        "cancellation": {
+            "first_chunk_samples": cancellation_first_samples,
+            "callbacks": cancellation_callbacks,
+            "elapsed_ms": round(cancellation_ms, 3),
+        },
+        "runs": runs,
+    }
+
+
 def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     if not 1 <= arguments.repetitions <= 100:
         raise ValueError("repetitions must be 1-100")
     if not 1 <= arguments.threads <= 16:
         raise ValueError("threads must be 1-16")
+    if arguments.engine == "sherpa-onnx":
+        return run_sherpa_benchmark(arguments)
     if arguments.voice != "alba":
         raise ValueError("only the reviewed alba voice is allowed in this pass")
 
@@ -238,7 +450,7 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     realtime_factors = [float(run["realtime_factor"]) for run in runs]
     report: dict[str, object] = {
         "schema_version": 1,
-        "engine": "pocket-tts",
+        "engine": "pocket-tts-python",
         "package_version": installed,
         "language": "english",
         "voice": arguments.voice,
