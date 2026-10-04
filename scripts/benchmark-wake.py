@@ -294,6 +294,15 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     }
     if any(not path.is_file() for path in files.values()) or not vosk_dir.is_dir():
         raise ValueError("wake or Vosk model is not completely cached")
+    keyword_lines = [
+        line.strip()
+        for line in files["keywords_file"].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if len(keyword_lines) != 1 or not keyword_lines[0].endswith(" @OREO"):
+        raise ValueError(
+            "wake keywords are stale; run scripts/fetch-wake-model.sh to refresh them"
+        )
     fixtures = load_fixtures(arguments.manifest)
     classifier = IntentClassifier(
         root / "config/wake-intent-corpus.tsv",
@@ -387,7 +396,12 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         "pipeline": "sherpa-kws-vosk-intent",
         "packages": package_versions,
         "models": {
-            "kws": {"id": kws_id, "archive_sha256": cached_digest(root, kws_id)},
+            "kws": {
+                "id": kws_id,
+                "archive_sha256": cached_digest(root, kws_id),
+                "keywords_sha256": file_sha256(files["keywords_file"]),
+                "keyword_entries": len(keyword_lines),
+            },
             "stt": {
                 "id": vosk_id,
                 "archive_sha256": cached_digest(root, "vosk-small-en-us-0.15"),
