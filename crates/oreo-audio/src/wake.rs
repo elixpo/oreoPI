@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use oreo_core::CancellationToken;
 
@@ -7,6 +7,7 @@ use crate::{AudioError, AudioErrorKind, AudioFormat, PcmChunk, STT_FORMAT};
 const MAX_WAKE_TEXT_BYTES: usize = 512;
 const WAKE_INTENT_THRESHOLD: f64 = 5.0;
 const EMBEDDED_CORPUS: &str = include_str!("../../../config/wake-intent-corpus.tsv");
+const EMBEDDED_ALIASES: &str = include_str!("../../../config/wake-identity-aliases.txt");
 
 /// Bounded rolling PCM retained only while listening for a possible wake intent.
 pub struct WakeAudioWindow {
@@ -90,6 +91,7 @@ pub struct WakeIntentDecision {
 
 /// Tiny multinomial Naive Bayes classifier trained from the reviewed corpus.
 pub struct WakeIntentClassifier {
+    aliases: HashSet<String>,
     weights: HashMap<String, [u32; 2]>,
     feature_totals: [u32; 2],
     document_totals: [u32; 2],
@@ -102,11 +104,21 @@ impl WakeIntentClassifier {
     ///
     /// Fails closed if the embedded corpus is malformed or incomplete.
     pub fn embedded() -> Result<Self, AudioError> {
-        Self::train(EMBEDDED_CORPUS)
+        Self::train(EMBEDDED_CORPUS, EMBEDDED_ALIASES)
     }
 
-    fn train(corpus: &str) -> Result<Self, AudioError> {
+    fn train(corpus: &str, aliases: &str) -> Result<Self, AudioError> {
+        let aliases: HashSet<String> = aliases
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_owned)
+            .collect();
+        if aliases.is_empty() || aliases.len() > 16 {
+            return Err(classifier_error());
+        }
         let mut classifier = Self {
+            aliases,
             weights: HashMap::new(),
             feature_totals: [0; 2],
             document_totals: [0; 2],
@@ -128,7 +140,7 @@ impl WakeIntentClassifier {
                 _ => return Err(classifier_error()),
             };
             classifier.document_totals[class] += 1;
-            for feature in features(text) {
+            for feature in features(text, &classifier.aliases) {
                 classifier.weights.entry(feature).or_insert([0; 2])[class] += 1;
                 classifier.feature_totals[class] += 1;
             }
@@ -159,7 +171,7 @@ impl WakeIntentClassifier {
         for (class, score) in scores.iter_mut().enumerate() {
             *score = ((f64::from(self.document_totals[class]) + 1.0) / (documents + 2.0)).ln();
         }
-        for feature in features(transcript) {
+        for feature in features(transcript, &self.aliases) {
             let counts = self.weights.get(&feature).copied().unwrap_or([0; 2]);
             for (class, score) in scores.iter_mut().enumerate() {
                 *score += ((f64::from(counts[class]) + 1.0)
@@ -175,8 +187,8 @@ impl WakeIntentClassifier {
     }
 }
 
-fn features(text: &str) -> Vec<String> {
-    let normalized: String = text
+fn features(text: &str, aliases: &HashSet<String>) -> Vec<String> {
+    let lexical: String = text
         .chars()
         .flat_map(char::to_lowercase)
         .map(|character| {
@@ -190,7 +202,17 @@ fn features(text: &str) -> Vec<String> {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let words: Vec<&str> = normalized.split_whitespace().collect();
+    let words: Vec<&str> = lexical
+        .split_whitespace()
+        .map(|word| {
+            if aliases.contains(word) {
+                "assistantname"
+            } else {
+                word
+            }
+        })
+        .collect();
+    let normalized = words.join(" ");
     let mut output = Vec::new();
     if let Some(first) = words.first() {
         output.push(format!("first:{first}"));

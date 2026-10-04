@@ -41,7 +41,14 @@ class Fixture:
 class IntentClassifier:
     """Small multinomial Naive Bayes model matching the Rust runtime."""
 
-    def __init__(self, corpus: Path) -> None:
+    def __init__(self, corpus: Path, aliases: Path) -> None:
+        self.aliases = {
+            line.strip()
+            for line in aliases.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        }
+        if not 1 <= len(self.aliases) <= 16:
+            raise ValueError("wake identity alias list is incomplete or too large")
         self.weights: dict[str, list[int]] = {}
         self.feature_totals = [0, 0]
         self.document_totals = [0, 0]
@@ -58,7 +65,7 @@ class IntentClassifier:
                 raise ValueError("wake intent corpus has an invalid label")
             category = int(label == "wake")
             self.document_totals[category] += 1
-            for feature in features(text):
+            for feature in features(text, self.aliases):
                 counts = self.weights.setdefault(feature, [0, 0])
                 counts[category] += 1
                 self.feature_totals[category] += 1
@@ -77,7 +84,7 @@ class IntentClassifier:
             math.log((count + 1) / (documents + 2))
             for count in self.document_totals
         ]
-        for feature in features(transcript):
+        for feature in features(transcript, self.aliases):
             counts = self.weights.get(feature, [0, 0])
             for category in range(2):
                 scores[category] += math.log(
@@ -88,9 +95,13 @@ class IntentClassifier:
         return score >= INTENT_THRESHOLD, score
 
 
-def features(text: str) -> list[str]:
-    normalized = " ".join(re.findall(r"[a-z0-9]+", text.casefold()))
-    words = normalized.split()
+def features(text: str, aliases: set[str]) -> list[str]:
+    lexical = re.findall(r"[a-z0-9]+", text.casefold())
+    words = [
+        "assistantname" if word in aliases else word
+        for word in lexical
+    ]
+    normalized = " ".join(words)
     output = [f"w:{word}" for word in words]
     if words:
         output.extend((f"first:{words[0]}", f"last:{words[-1]}"))
@@ -284,7 +295,10 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     if any(not path.is_file() for path in files.values()) or not vosk_dir.is_dir():
         raise ValueError("wake or Vosk model is not completely cached")
     fixtures = load_fixtures(arguments.manifest)
-    classifier = IntentClassifier(root / "config/wake-intent-corpus.tsv")
+    classifier = IntentClassifier(
+        root / "config/wake-intent-corpus.tsv",
+        root / "config/wake-identity-aliases.txt",
+    )
     rss_before = resident_memory_kib()
     load_started = time.perf_counter()
     kws = sherpa_onnx.KeywordSpotter(
@@ -413,7 +427,10 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
 
 def self_test() -> None:
     root = Path(__file__).resolve().parent.parent
-    classifier = IntentClassifier(root / "config/wake-intent-corpus.tsv")
+    classifier = IntentClassifier(
+        root / "config/wake-intent-corpus.tsv",
+        root / "config/wake-identity-aliases.txt",
+    )
     corpus = (root / "config/wake-intent-corpus.tsv").read_text(encoding="utf-8")
     tested = 0
     for line in corpus.splitlines():

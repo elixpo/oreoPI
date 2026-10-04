@@ -1,0 +1,5 @@
+# Canonical identity spellings observed after a sherpa Oreo candidate.
+oreo
+oreos
+orio
+audio

@@ -19,6 +19,20 @@ train	wake	oreo set a timer
 train	wake	oreo tell me the weather
 train	wake	yo oreo
 train	wake	could you help me oreo
+train	wake	oreo what happened while i was away
+train	wake	would you check this for me oreo
+train	wake	oreo remind me about the meeting
+train	wake	do you know the answer oreo
+train	wake	oreo lower the volume a little
+train	wake	could we continue our conversation oreo
+train	wake	oreo explain that another way
+train	wake	please take a note oreo
+train	wake	is the front door locked oreo
+train	wake	oreo read the next message
+train	wake	audio
+train	wake	audio are you listening
+train	wake	wake up audio
+train	wake	audio can you help
 train	ignore	i bought oreo cookies
 train	ignore	oreo is a cookie brand
 train	ignore	do you want some oreos
@@ -39,15 +53,37 @@ train	ignore	she mentioned oreo in the article
 train	ignore	put the oreo box away
 train	ignore	we should buy more oreos tomorrow
 train	ignore	this dessert contains oreo crumbs
+train	ignore	play the audio file
+train	ignore	the audio is distorted
+train	ignore	this audio sounds clear
+train	ignore	record audio from the microphone
+train	ignore	the audio output is muted
+train	ignore	we edited the audio yesterday
+train	ignore	open the audio settings
+train	ignore	that audio track is too loud
+train	ignore	the article mentions oreo several times
+train	ignore	compare prices for oreo packets
+train	ignore	oreo sales increased this month
+train	ignore	the oreo wrapper is recyclable
+train	ignore	put oreos beside the milk
+train	ignore	she ordered an oreo milkshake
 test	wake	oreo could you listen to me
 test	wake	wake up orio
 test	wake	are you listening oreo
 test	wake	oreo what time is it
 test	wake	please answer me oreo
 test	wake	hello are you there oreo
+test	wake	could you check the battery oreo
+test	wake	audio you there
+test	wake	wake up audio
+test	wake	audio
 test	ignore	please buy a packet of oreos
 test	ignore	oreo cookies are discounted today
 test	ignore	the article compares oreo flavors
 test	ignore	i named the puppy oreo
 test	ignore	turn down the stereo please
 test	ignore	we used oreos in the cheesecake
+test	ignore	please play the audio recording
+test	ignore	the audio quality is excellent
+test	ignore	we need more oreo packets
+test	ignore	he reviewed the audio settings

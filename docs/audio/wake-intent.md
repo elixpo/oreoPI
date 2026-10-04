@@ -6,19 +6,22 @@ Date: 2026-10-04
 
 The laptop candidate uses a four-stage local cascade:
 
-1. sherpa-onnx's 3M open-vocabulary KWS model listens for `Oreo` and a small
-   reviewed set of close address phrases. The phrase list is data in
-   `config/wake-keywords.raw.txt`, not application control flow, and can be
-   regenerated without retraining the acoustic model.
+1. sherpa-onnx's 3M open-vocabulary KWS model listens only for the configurable
+   assistant identity, `Oreo`. It does not contain a list of greeting or command
+   phrases. Its token file can be regenerated without retraining the acoustic
+   model.
 2. `WakeAudioWindow` retains only the most recent one to three seconds of
    16 kHz mono PCM. It drops old samples, rejects format changes, and clears on
    cancellation. It does not persist background audio.
 3. A KWS candidate sends that bounded window to the already-selected local
    Vosk recognizer. No network request is made.
-4. `WakeIntentClassifier` decides whether the transcript addresses Oreo. It is
-   a tiny in-memory Naive Bayes model trained from the reviewed TSV corpus and
-   deliberately distinguishes direct address from ordinary Oreo product
-   mentions and near-sounding words such as “stereo.”
+4. `WakeIntentClassifier` decides whether the arbitrary transcript addresses
+   Oreo. It is a tiny in-memory Naive Bayes model trained from the reviewed TSV
+   corpus, not a phrase matcher. Expected Vosk renderings of the identity are
+   canonicalized from the reviewed `config/wake-identity-aliases.txt` data only
+   after KWS fires. The surrounding learned context then distinguishes direct
+   address from Oreo product mentions, ordinary uses of “audio,” and
+   near-sounding words such as “stereo.”
 
 The model is still a candidate until the recorded benchmark and background
 soak pass. The benchmark adapter is Python-only; the production daemon will
