@@ -164,9 +164,15 @@ runtime comparison; it is not the final product voice.
 ```bash
 rtk .venv/bin/python scripts/benchmark-tts.py run \
   --engine sherpa-onnx \
-  --output target/audio-bench/sherpa-pocket-tts.json \
-  --save-audio target/audio-bench/sherpa-pocket-tts-wav
+  --steps 2 \
+  --output target/audio-bench/sherpa-pocket-tts-steps2.json \
+  --save-audio target/audio-bench/sherpa-pocket-tts-steps2-wav
 ```
+
+Two flow steps is the current upstream example and Oreo default. One step may
+be measured as a speed experiment only if two misses the latency gate; it must
+use a separate report/WAV directory and pass a fresh listening check because
+the option explicitly trades generation quality for speed.
 
 Do not add the Rust dependency until this report demonstrates materially lower
 RSS, acceptable first-audio latency, correct cancellation, and acceptable

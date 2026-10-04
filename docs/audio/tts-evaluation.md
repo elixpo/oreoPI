@@ -33,3 +33,11 @@ converted January 2026 model is not identical to PocketTTS 3.3.0's September
 English weights, so generated voice quality must be listened to rather than
 inferred from the Python result. The bundled reference voice is benchmark-only
 until its provenance is reviewed; it is not an Oreo product voice selection.
+
+The initial sherpa comparison accidentally used five flow steps from its Python
+API example. It loaded at 351,912 KiB RSS and peaked at 628,736 KiB, but its
+1,539 ms first-audio p95 failed the 500 ms gate. Current upstream PocketTTS
+instructions use two steps and identify this setting as the quality/speed
+tradeoff, so the selection measurement is repeated at two. The five-step
+result remains recorded as evidence rather than being presented as the runtime
+default.

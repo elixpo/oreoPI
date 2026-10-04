@@ -51,6 +51,12 @@ def parse_arguments() -> argparse.Namespace:
     )
     run.add_argument("--repetitions", type=int, default=3)
     run.add_argument("--threads", type=int, default=2)
+    run.add_argument(
+        "--steps",
+        type=int,
+        default=2,
+        help="sherpa PocketTTS flow steps; upstream currently recommends 2",
+    )
     run.add_argument("--voice", default="alba")
     run.add_argument("--model", type=Path)
     run.add_argument("--reference-audio", type=Path)
@@ -172,6 +178,8 @@ def cached_digest(path: Path) -> str:
 
 
 def run_sherpa_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
+    if not 1 <= arguments.steps <= 5:
+        raise ValueError("sherpa PocketTTS steps must be 1-5")
     try:
         import numpy as np
         import sherpa_onnx
@@ -237,7 +245,7 @@ def run_sherpa_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     generation_config = sherpa_onnx.GenerationConfig()
     generation_config.reference_audio = reference_audio
     generation_config.reference_sample_rate = reference_sample_rate
-    generation_config.num_steps = 5
+    generation_config.num_steps = arguments.steps
 
     runs: list[dict[str, object]] = []
     for repetition in range(arguments.repetitions):
@@ -317,6 +325,7 @@ def run_sherpa_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         "language": "english",
         "voice": reference_audio_path.name,
         "quantized": True,
+        "generation_steps": arguments.steps,
         "model_archive_sha256": cached_digest(digest_path),
         "sample_rate": model_instance.sample_rate,
         "threads": arguments.threads,
