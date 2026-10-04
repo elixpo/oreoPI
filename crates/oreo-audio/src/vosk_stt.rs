@@ -44,7 +44,10 @@ impl ConfidenceAccumulator {
         self.sum += confidence;
         self.count += 1.0;
         self.words = self.words.saturating_add(1);
-        self.minimum = Some(self.minimum.map_or(confidence, |value| value.min(confidence)));
+        self.minimum = Some(
+            self.minimum
+                .map_or(confidence, |value| value.min(confidence)),
+        );
     }
 
     fn merge(&mut self, other: Self) {
@@ -128,7 +131,7 @@ impl VoskTranscriber {
         self.confidence = ConfidenceAccumulator::default();
     }
 
-    fn append_segment(&mut self, segment: DecodedSegment) -> Result<(), AudioError> {
+    fn append_segment(&mut self, segment: &DecodedSegment) -> Result<(), AudioError> {
         append_bounded(
             &mut self.transcript,
             &segment.text,
@@ -214,7 +217,7 @@ impl StreamingTranscriber for VoskTranscriber {
             return Err(cancelled());
         }
         if let Some(segment) = segment
-            && let Err(error) = self.append_segment(segment)
+            && let Err(error) = self.append_segment(&segment)
         {
             self.reset_utterance();
             return Err(error);
@@ -249,7 +252,7 @@ impl StreamingTranscriber for VoskTranscriber {
             self.reset_utterance();
             return Err(cancelled());
         }
-        if let Err(error) = self.append_segment(final_segment) {
+        if let Err(error) = self.append_segment(&final_segment) {
             self.reset_utterance();
             return Err(error);
         }
@@ -258,9 +261,9 @@ impl StreamingTranscriber for VoskTranscriber {
 }
 
 fn decode_segment(result: CompleteResult<'_>) -> Result<DecodedSegment, AudioError> {
-    let result = result
-        .single()
-        .ok_or_else(|| AudioError::new(AudioErrorKind::Backend, "Vosk returned an invalid result"))?;
+    let result = result.single().ok_or_else(|| {
+        AudioError::new(AudioErrorKind::Backend, "Vosk returned an invalid result")
+    })?;
     let mut confidence = ConfidenceAccumulator::default();
     for word in result.result {
         confidence.record(word.conf);

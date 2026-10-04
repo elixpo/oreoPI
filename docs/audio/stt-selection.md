@@ -33,10 +33,12 @@ For device status it returned “their” instead of “the” four times and th
 reference once. Sherpa was stable but omitted “set a timer,” changed “device
 status” substantially, and rendered Kolkata as “Golcotta.”
 
-These measurements cover cached file transcription, not endpoint latency or
-the complete microphone-to-intent path. The selection remains provisional
-until cancellation, soak, larger-corpus, live microphone, and AArch64 gates are
-recorded.
+The production Rust adapter, cancellation cleanup, fixed-WAV agent handoff, and
+live laptop microphone-to-agent path now pass. The fixed free-conversation WAV
+completed cached transcription and agent handoff with 768 ms reported
+utterance processing on the reference laptop. The selection remains
+provisional for the production image until the 30-minute soak, larger
+quiet/noisy corpus, and AArch64 gates are recorded.
 
 Wake-word recognition is intentionally not part of the Vosk adapter. The first
 implementation remains push-to-talk and exposes Vosk only through Oreo's

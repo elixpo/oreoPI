@@ -57,8 +57,12 @@ set +a
 rtk env OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   cargo run -p elixpo-cli --features vosk-stt -- \
-  voice --wav tests/audio/fixtures/base-voice.wav
+  voice --metrics --wav tests/audio/fixtures/base-voice.wav
 ```
+
+`--metrics` adds private-safe STT confidence and agent token/latency records to
+standard error. It does not include the recording, transcript, prompt, or
+response.
 
 The repository ignores every WAV file. Keep the expected sentence separately
 in the local benchmark manifest when measuring word error rate; do not tune a

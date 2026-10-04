@@ -72,3 +72,31 @@ Set `OREO_VOSK_MODEL_DIR` only when the model is not at the default
 transcript and transcription time; it does not persist either the WAV or the
 transcript. Wake-word detection is deliberately outside this adapter and will
 be selected later.
+
+The Rust adapter also emits aggregate mean/minimum word confidence and word
+count. Confidence is diagnostic evidence, not an automatic correction or
+acceptance threshold: a recognizer can be confidently wrong, and rejecting a
+single low-confidence name can discard an otherwise correct command.
+
+## Production-adapter soak
+
+Run a one-minute check first, then the 30-minute laptop acceptance soak. The
+command loads Vosk once, replays the same bounded WAV in-process, and requires
+identical hypotheses, cached p95 below 1.2 seconds, and no more than 8 MiB end
+RSS growth after five warm-up turns. It reports peak RSS separately.
+
+```bash
+rtk env OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  cargo run -p elixpo-cli --features vosk-stt -- \
+  audio stt-soak tests/audio/fixtures/base-voice.wav 1
+
+rtk env OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  cargo run --release -p elixpo-cli --features vosk-stt -- \
+  audio stt-soak tests/audio/fixtures/base-voice.wav 30
+```
+
+The release build is the acceptance measurement. A broader quiet/noisy fixture
+manifest and an AArch64 run remain required before the production image is
+approved; the fixed base recording closes only the repeatable laptop path.

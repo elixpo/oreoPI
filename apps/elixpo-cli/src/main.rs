@@ -449,8 +449,17 @@ fn audio_command(
         [command, wav_path] if command == "transcribe-test" => {
             transcribe_test(PathBuf::from(wav_path))
         }
+        [command, wav_path, minutes] if command == "stt-soak" => {
+            let minutes = minutes
+                .parse::<u64>()
+                .map_err(|_| "STT soak duration must be 1-120 minutes")?;
+            if !(1..=120).contains(&minutes) {
+                return Err("STT soak duration must be 1-120 minutes".into());
+            }
+            stt_soak(PathBuf::from(wav_path), minutes)
+        }
         _ => Err(
-            "usage: elixpo audio <devices|capture-test <1-10 seconds>|playback-test <1-10 seconds>|transcribe-test <wav>>"
+            "usage: elixpo audio <devices|capture-test <1-10 seconds>|playback-test <1-10 seconds>|transcribe-test <wav>|stt-soak <wav> <1-120 minutes>>"
                 .into(),
         ),
     }
@@ -493,6 +502,9 @@ fn voice_command(
             return Err(error);
         }
     };
+    if options.metrics {
+        print_stt_metrics(&transcriber);
+    }
     state.release()?;
     state.transcript_ready()?;
     println!("\nYou said: {transcript}");
@@ -616,6 +628,22 @@ fn vosk_model_path() -> PathBuf {
 }
 
 #[cfg(feature = "vosk-stt")]
+fn print_stt_metrics(transcriber: &VoskTranscriber) {
+    if let Some(confidence) = transcriber.confidence() {
+        eprintln!(
+            "stt_metrics={}",
+            serde_json::json!({
+                "schema_version": 1,
+                "engine": "vosk",
+                "mean_word_confidence": confidence.mean,
+                "minimum_word_confidence": confidence.minimum,
+                "words": confidence.words,
+            })
+        );
+    }
+}
+
+#[cfg(feature = "vosk-stt")]
 fn transcribe_test(wav_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let model_path = vosk_model_path();
     let limits = AudioLimits::sbc();
@@ -627,7 +655,119 @@ fn transcribe_test(wav_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> 
     let transcript = transcribe_source(&mut source, &mut transcriber, limits, &cancellation)?;
     println!("transcript: {transcript}");
     println!("transcription_ms: {}", started.elapsed().as_millis());
+    print_stt_metrics(&transcriber);
     Ok(())
+}
+
+#[cfg(feature = "vosk-stt")]
+fn stt_soak(wav_path: PathBuf, minutes: u64) -> Result<(), Box<dyn std::error::Error>> {
+    const WARMUP_RUNS: usize = 5;
+    const MAX_RUNS: usize = 100_000;
+    const MAX_END_RSS_GROWTH_KIB: u64 = 8 * 1_024;
+    const MAX_STT_P95_MS: u64 = 1_200;
+
+    let limits = AudioLimits::sbc();
+    let wav_bytes = std::fs::read(wav_path)?;
+    let mut transcriber = VoskTranscriber::load(vosk_model_path(), limits)?;
+    let cancellation = CancellationToken::new();
+    let mut expected = None;
+    for _ in 0..WARMUP_RUNS {
+        let transcript = transcribe_wav_bytes(&wav_bytes, &mut transcriber, limits, &cancellation)?;
+        if let Some(expected) = &expected
+            && expected != &transcript
+        {
+            return Err("Vosk output changed during STT soak warm-up".into());
+        }
+        expected = Some(transcript);
+    }
+
+    let baseline_rss_kib = resident_memory_kib()?;
+    let mut peak_rss_kib = baseline_rss_kib;
+    let deadline = Instant::now()
+        + Duration::from_secs(
+            minutes
+                .checked_mul(60)
+                .ok_or("STT soak duration is too large")?,
+        );
+    let expected = expected.ok_or("STT soak warm-up produced no transcript")?;
+    let mut latencies_ms = Vec::new();
+    let mut mismatches = 0_u64;
+    while Instant::now() < deadline {
+        if latencies_ms.len() == MAX_RUNS {
+            return Err("STT soak exceeded its bounded run count".into());
+        }
+        let started = Instant::now();
+        let transcript = transcribe_wav_bytes(&wav_bytes, &mut transcriber, limits, &cancellation)?;
+        latencies_ms.push(elapsed_millis(started));
+        if transcript != expected {
+            mismatches = mismatches.saturating_add(1);
+        }
+        peak_rss_kib = peak_rss_kib.max(resident_memory_kib()?);
+    }
+    let end_rss_kib = resident_memory_kib()?;
+    let end_growth_kib = end_rss_kib.saturating_sub(baseline_rss_kib);
+    let p95_ms = nearest_rank_p95(&mut latencies_ms)?;
+    println!("runs: {}", latencies_ms.len());
+    println!("hypothesis_mismatches: {mismatches}");
+    println!("p95_ms: {p95_ms}");
+    println!("baseline_rss_kib: {baseline_rss_kib}");
+    println!("peak_rss_kib: {peak_rss_kib}");
+    println!("end_rss_kib: {end_rss_kib}");
+    println!("end_growth_kib: {end_growth_kib}");
+    print_stt_metrics(&transcriber);
+    if mismatches != 0 {
+        return Err("STT soak produced inconsistent hypotheses".into());
+    }
+    if p95_ms >= MAX_STT_P95_MS {
+        return Err("STT soak exceeded the cached latency gate".into());
+    }
+    if end_growth_kib > MAX_END_RSS_GROWTH_KIB {
+        return Err("STT soak exceeded the resident-memory growth gate".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "vosk-stt"))]
+fn stt_soak(_wav_path: PathBuf, _minutes: u64) -> Result<(), Box<dyn std::error::Error>> {
+    Err("stt-soak requires a build with --features vosk-stt".into())
+}
+
+#[cfg(feature = "vosk-stt")]
+fn transcribe_wav_bytes(
+    wav_bytes: &[u8],
+    transcriber: &mut VoskTranscriber,
+    limits: AudioLimits,
+    cancellation: &CancellationToken,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let wav = WavSource::read(wav_bytes, limits)?;
+    let mut source = ConvertingSource::new(wav, STT_FORMAT, limits)?;
+    Ok(transcribe_source(
+        &mut source,
+        transcriber,
+        limits,
+        cancellation,
+    )?)
+}
+
+#[cfg(feature = "vosk-stt")]
+fn resident_memory_kib() -> Result<u64, Box<dyn std::error::Error>> {
+    let status = std::fs::read_to_string("/proc/self/status")?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| value.split_whitespace().next())
+        .ok_or_else(|| "resident memory is unavailable".into())
+        .and_then(|value| value.parse::<u64>().map_err(Into::into))
+}
+
+#[cfg(feature = "vosk-stt")]
+fn nearest_rank_p95(values: &mut [u64]) -> Result<u64, Box<dyn std::error::Error>> {
+    if values.is_empty() {
+        return Err("STT soak completed no measured runs".into());
+    }
+    values.sort_unstable();
+    let rank = values.len().saturating_mul(95).div_ceil(100);
+    Ok(values[rank.saturating_sub(1)])
 }
 
 #[cfg(not(feature = "vosk-stt"))]

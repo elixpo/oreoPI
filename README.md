@@ -48,10 +48,13 @@ cargo run -p elixpo-cli -- memory inspect <session-id>
 cargo run -p elixpo-cli -- daemon stop
 cargo run -p elixpo-cli -- ask --offline "What is running?"
 POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask "Hello Oreo"
+POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask --metrics "Hello Oreo"
 ```
 
 The Vosk-enabled microphone-to-agent acceptance commands and native-library
 setup are documented in [the live voice pipeline guide](docs/audio/live-pipeline.md).
+The private-safe multi-model cost workflow is documented in
+[the agent evaluation guide](docs/agent-cost.md).
 
 The first container checkpoint packages the same daemon and CLI for AMD64 and
 ARM64 without exposing a network port. See [container deployment](docs/container.md)
