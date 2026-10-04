@@ -51,6 +51,15 @@ impl PushToTalkState {
         self.transition(PipelinePhase::Transcribing, PipelinePhase::Responding)
     }
 
+    /// Completes a text-only response and returns to idle.
+    ///
+    /// # Errors
+    ///
+    /// Rejects completion outside response planning.
+    pub fn text_response_complete(&mut self) -> Result<(), AudioError> {
+        self.transition(PipelinePhase::Responding, PipelinePhase::Idle)
+    }
+
     /// Marks the first speakable response chunk.
     ///
     /// # Errors
@@ -121,6 +130,18 @@ mod tests {
         state.response_ready().expect("response starts");
         state.audio_ready().expect("audio starts");
         state.complete().expect("playback completes");
+        assert_eq!(state.phase(), PipelinePhase::Idle);
+    }
+
+    #[test]
+    fn text_only_response_returns_to_idle_without_synthesis() {
+        let mut state = PushToTalkState::default();
+        state.press().expect("capture starts");
+        state.release().expect("capture ends");
+        state.transcript_ready().expect("transcript completes");
+        state
+            .text_response_complete()
+            .expect("text response completes");
         assert_eq!(state.phase(), PipelinePhase::Idle);
     }
 

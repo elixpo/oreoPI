@@ -13,15 +13,17 @@ The GitHub issue tracker is the source of truth:
 ## Current state
 
 The workspace contains the deterministic reference path, Oreo-owned agent
-boundary, bounded SQLite state, and single-owner local daemon required through
-WP-003:
+boundary, bounded SQLite state, single-owner local daemon, and an optional
+offline speech-input path:
 
 ```text
 CLI input -> local Unix socket -> daemon -> bounded SQLite state
          \-> local router or Oreo agent -> response plan -> output sink
+microphone -> bounded PCM conversion -> Vosk -> Oreo agent -> text response
 ```
 
-The microphone and hardware paths are not connected yet. The CLI keeps an
+The developer voice command uses explicit Enter-to-start/Enter-to-stop capture.
+Wake-word detection, TTS, and hardware GPIO are later layers. The CLI keeps an
 explicit offline path and enables the live Pollinations provider only when its
 credential and exact model are supplied through the process environment.
 
@@ -47,6 +49,9 @@ cargo run -p elixpo-cli -- daemon stop
 cargo run -p elixpo-cli -- ask --offline "What is running?"
 POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask "Hello Oreo"
 ```
+
+The Vosk-enabled microphone-to-agent acceptance commands and native-library
+setup are documented in [the live voice pipeline guide](docs/audio/live-pipeline.md).
 
 The first container checkpoint packages the same daemon and CLI for AMD64 and
 ARM64 without exposing a network port. See [container deployment](docs/container.md)

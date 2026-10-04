@@ -18,7 +18,9 @@ use oreo_audio::{
     default_audio_devices,
 };
 #[cfg(feature = "vosk-stt")]
-use oreo_audio::{ConvertingSource, STT_FORMAT, VoskTranscriber, WavSource, transcribe_source};
+use oreo_audio::{
+    ConvertingSource, PushToTalkState, STT_FORMAT, VoskTranscriber, WavSource, transcribe_source,
+};
 use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig, StdoutSink};
 use oreo_local_api::{PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request};
 
@@ -100,13 +102,14 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
         Some("memory") => memory_command(arguments),
         Some("diagnostics") => diagnostics_command(arguments),
         Some("audio") => audio_command(arguments),
+        Some("voice") => voice_command(arguments),
         Some("--version" | "-V") => {
             println!("elixpo {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         _ => {
             Err(
-                "usage: elixpo <status|ask [--offline]|tools|timer|daemon|memory|diagnostics|audio|--version>"
+                "usage: elixpo <status|ask [--offline]|voice [--offline]|tools|timer|daemon|memory|diagnostics|audio|--version>"
                     .into(),
             )
         }
@@ -121,10 +124,7 @@ fn offline_ask(request: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn live_ask(request: String) -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = env::var("POLLINATIONS_API_KEY")
-        .map_err(|_| "POLLINATIONS_API_KEY is required; use --offline for the local path")?;
-    let model = env::var("OREO_MODEL")
-        .map_err(|_| "OREO_MODEL is required; use --offline for the local path")?;
+    let (api_key, model) = live_agent_settings()?;
     let provider = Arc::new(PollinationsProvider::new(PollinationsConfig::new(
         api_key,
     )?)?);
@@ -151,6 +151,14 @@ fn live_ask(request: String) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", response.text);
     }
     Ok(())
+}
+
+fn live_agent_settings() -> Result<(String, String), Box<dyn std::error::Error>> {
+    let api_key = env::var("POLLINATIONS_API_KEY")
+        .map_err(|_| "POLLINATIONS_API_KEY is required; use --offline for the local path")?;
+    let model = env::var("OREO_MODEL")
+        .map_err(|_| "OREO_MODEL is required; use --offline for the local path")?;
+    Ok((api_key, model))
 }
 
 fn capability_registry(
@@ -368,13 +376,110 @@ fn audio_command(
 }
 
 #[cfg(feature = "vosk-stt")]
-fn transcribe_test(wav_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let model_path = env::var_os("OREO_VOSK_MODEL_DIR")
+fn voice_command(
+    arguments: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let arguments = arguments.collect::<Vec<_>>();
+    let offline = match arguments.as_slice() {
+        [] => false,
+        [flag] if flag == "--offline" => true,
+        _ => return Err("usage: elixpo voice [--offline]".into()),
+    };
+    if !offline {
+        let _ = live_agent_settings()?;
+    }
+
+    let limits = AudioLimits::sbc();
+    let model_path = vosk_model_path();
+    eprintln!("Loading the local speech model...");
+    let mut transcriber = VoskTranscriber::load(model_path, limits)?;
+    wait_for_enter("Press Enter to start recording.")?;
+
+    let input = CpalInputSource::open_default(limits)?;
+    let capture_control = input.control();
+    let mut source = ConvertingSource::new(input, STT_FORMAT, limits)?;
+    let mut state = PushToTalkState::default();
+    state.press()?;
+
+    print!("Recording... press Enter to stop. ");
+    io::stdout().flush()?;
+    let stopper_control = capture_control.clone();
+    let stopper = std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = io::stdin().read_line(&mut line).map(|_| ());
+        stopper_control.stop();
+        result
+    });
+
+    let started = Instant::now();
+    let cancellation = CancellationToken::new();
+    let transcript_result = transcribe_source(&mut source, &mut transcriber, limits, &cancellation);
+    capture_control.stop();
+    let transcript = match transcript_result {
+        Ok(transcript) => transcript,
+        Err(error) => {
+            state.fault();
+            return Err(error.into());
+        }
+    };
+    stopper
+        .join()
+        .map_err(|_| "push-to-talk input thread failed")??;
+
+    let capture_snapshot = source.into_inner().stats();
+    if capture_snapshot.dropped_chunks != 0 || capture_snapshot.stream_errors != 0 {
+        state.fault();
+        return Err("microphone capture lost audio; transcript was discarded".into());
+    }
+    state.release()?;
+    state.transcript_ready()?;
+    println!("\nYou said: {transcript}");
+    println!("utterance_ms: {}", started.elapsed().as_millis());
+
+    let response = if offline {
+        offline_ask(&transcript)
+    } else {
+        live_ask(transcript)
+    };
+    if let Err(error) = response {
+        state.fault();
+        return Err(error);
+    }
+    state.text_response_complete()?;
+    Ok(())
+}
+
+#[cfg(not(feature = "vosk-stt"))]
+fn voice_command(
+    _arguments: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Err("voice requires a build with --features vosk-stt".into())
+}
+
+#[cfg(feature = "vosk-stt")]
+fn wait_for_enter(prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
+    print!("{prompt} ");
+    io::stdout().flush()?;
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line)? == 0 {
+        return Err("push-to-talk requires an interactive terminal".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "vosk-stt")]
+fn vosk_model_path() -> PathBuf {
+    env::var_os("OREO_VOSK_MODEL_DIR")
         .filter(|path| !path.is_empty())
         .map_or_else(
             || PathBuf::from("models/cache/vosk-model-small-en-us-0.15"),
             PathBuf::from,
-        );
+        )
+}
+
+#[cfg(feature = "vosk-stt")]
+fn transcribe_test(wav_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let model_path = vosk_model_path();
     let limits = AudioLimits::sbc();
     let wav = WavSource::read(File::open(wav_path)?, limits)?;
     let mut source = ConvertingSource::new(wav, STT_FORMAT, limits)?;
