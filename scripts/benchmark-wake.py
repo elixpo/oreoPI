@@ -22,7 +22,8 @@ from pathlib import Path
 SAMPLE_RATE = 16_000
 CHUNK_FRAMES = 320
 TAIL_FRAMES = 10_560
-MAX_AUDIO_SECONDS = 3
+RING_SECONDS = 3
+MAX_FIXTURE_SECONDS = 15
 MAX_FIXTURES = 64
 MAX_TRANSCRIPT_BYTES = 512
 INTENT_THRESHOLD = 5.0
@@ -65,7 +66,10 @@ class IntentClassifier:
             raise ValueError("wake intent corpus is incomplete")
 
     def classify(self, transcript: str) -> tuple[bool, float]:
-        if not transcript.strip() or len(transcript.encode("utf-8")) > MAX_TRANSCRIPT_BYTES:
+        if (
+            not transcript.strip()
+            or len(transcript.encode("utf-8")) > MAX_TRANSCRIPT_BYTES
+        ):
             return False, float("-inf")
         vocabulary = len(self.weights)
         documents = sum(self.document_totals)
@@ -151,8 +155,10 @@ def load_fixtures(path: Path) -> list[Fixture]:
             ):
                 raise ValueError(f"wake fixture {fixture_id} must be 16 kHz mono PCM16")
             frames = audio.getnframes()
-            if not 1 <= frames <= SAMPLE_RATE * MAX_AUDIO_SECONDS:
-                raise ValueError(f"wake fixture {fixture_id} must be at most 3 seconds")
+            if not 1 <= frames <= SAMPLE_RATE * MAX_FIXTURE_SECONDS:
+                raise ValueError(
+                    f"wake fixture {fixture_id} must be at most {MAX_FIXTURE_SECONDS} seconds"
+                )
             pcm = audio.readframes(frames)
         seen.add(fixture_id)
         output.append(Fixture(fixture_id, wav_path, reference, expected_wake, pcm))
@@ -203,45 +209,65 @@ def vosk_transcript(vosk: object, model: object, pcm: bytes) -> str:
     return " ".join(parts)
 
 
-def detect_keyword(kws: object, np: object, pcm: bytes) -> str:
+def append_ring(ring: bytearray, chunk: bytes) -> None:
+    ring.extend(chunk)
+    excess = len(ring) - RING_SECONDS * SAMPLE_RATE * 2
+    if excess > 0:
+        del ring[:excess]
+
+
+def detect_keyword(kws: object, np: object, pcm: bytes) -> tuple[str, bytes]:
     samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
     stream = kws.create_stream()
+    ring = bytearray()
     for offset in range(0, len(samples), CHUNK_FRAMES):
-        stream.accept_waveform(SAMPLE_RATE, samples[offset : offset + CHUNK_FRAMES])
+        sample_chunk = samples[offset : offset + CHUNK_FRAMES]
+        append_ring(ring, pcm[offset * 2 : (offset + len(sample_chunk)) * 2])
+        stream.accept_waveform(SAMPLE_RATE, sample_chunk)
         while kws.is_ready(stream):
             kws.decode_stream(stream)
             result = kws.get_result(stream)
             if result:
-                return result
+                return result, bytes(ring)
     stream.accept_waveform(SAMPLE_RATE, np.zeros(TAIL_FRAMES, dtype=np.float32))
     stream.input_finished()
     while kws.is_ready(stream):
         kws.decode_stream(stream)
         result = kws.get_result(stream)
         if result:
-            return result
-    return ""
+            return result, bytes(ring)
+    return "", b""
 
 
 def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     if not 1 <= arguments.repetitions <= 20 or not 1 <= arguments.threads <= 4:
         raise ValueError("repetitions must be 1-20 and threads must be 1-4")
-    if not 0 < arguments.keywords_threshold <= 1 or not 0 < arguments.keywords_score <= 10:
+    if (
+        not 0 < arguments.keywords_threshold <= 1
+        or not 0 < arguments.keywords_score <= 10
+    ):
         raise ValueError("keyword score/threshold are outside safe benchmark bounds")
     try:
         import numpy as np
         import sherpa_onnx
         import vosk
     except ImportError as error:
-        raise RuntimeError("wake benchmark requires numpy, sherpa-onnx, and vosk") from error
+        raise RuntimeError(
+            "wake benchmark requires numpy, sherpa-onnx, and vosk"
+        ) from error
 
     package_versions = {
         "sherpa_onnx": importlib.metadata.version("sherpa-onnx"),
         "vosk": importlib.metadata.version("vosk"),
         "numpy": importlib.metadata.version("numpy"),
     }
-    if package_versions["sherpa_onnx"] != "1.13.8" or package_versions["vosk"] != "0.3.45":
-        raise RuntimeError("wake benchmark requires sherpa-onnx==1.13.8 and vosk==0.3.45")
+    if (
+        package_versions["sherpa_onnx"] != "1.13.8"
+        or package_versions["vosk"] != "0.3.45"
+    ):
+        raise RuntimeError(
+            "wake benchmark requires sherpa-onnx==1.13.8 and vosk==0.3.45"
+        )
 
     root = arguments.repo_root
     kws_id = "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
@@ -282,9 +308,15 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         runs: list[dict[str, object]] = []
         for _ in range(arguments.repetitions):
             started = time.perf_counter()
-            keyword = detect_keyword(kws, np, fixture.pcm)
-            transcript = vosk_transcript(vosk, vosk_model, fixture.pcm) if keyword else ""
-            addressed, intent_score = classifier.classify(transcript)
+            keyword, candidate_pcm = detect_keyword(kws, np, fixture.pcm)
+            transcript = (
+                vosk_transcript(vosk, vosk_model, candidate_pcm) if keyword else ""
+            )
+            addressed, intent_score = (
+                classifier.classify(transcript)
+                if keyword and transcript
+                else (False, None)
+            )
             accepted = bool(keyword) and addressed
             latency_ms = (time.perf_counter() - started) * 1000
             latencies.append(latency_ms)
@@ -296,6 +328,7 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
                     "keyword": keyword,
                     "transcript": transcript,
                     "intent_score": intent_score,
+                    "window_ms": len(candidate_pcm) * 1000 // (SAMPLE_RATE * 2),
                     "accepted": accepted,
                     "latency_ms": latency_ms,
                 }
@@ -303,18 +336,35 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         representative = Counter(
             (run["keyword"], run["transcript"], run["accepted"]) for run in runs
         ).most_common(1)[0][0]
+        scores = [
+            float(run["intent_score"])
+            for run in runs
+            if run["intent_score"] is not None
+        ]
         results.append(
             {
                 "id": fixture.fixture_id,
                 "wav_sha256": file_sha256(fixture.path),
+                "audio_seconds": len(fixture.pcm) / (SAMPLE_RATE * 2),
                 "reference": fixture.reference,
                 "expected_wake": fixture.expected_wake,
                 "keyword": representative[0],
                 "transcript": representative[1],
                 "accepted": representative[2],
-                "stable": len({(r["keyword"], r["transcript"], r["accepted"]) for r in runs}) == 1,
-                "intent_score_median": statistics.median(float(r["intent_score"]) for r in runs),
-                "latency_ms_p95": percentile([float(r["latency_ms"]) for r in runs], 0.95),
+                "stable": len(
+                    {
+                        (run["keyword"], run["transcript"], run["accepted"])
+                        for run in runs
+                    }
+                )
+                == 1,
+                "intent_score_median": statistics.median(scores) if scores else None,
+                "candidate_window_ms_median": statistics.median(
+                    int(run["window_ms"]) for run in runs
+                ),
+                "latency_ms_p95": percentile(
+                    [float(run["latency_ms"]) for run in runs], 0.95
+                ),
             }
         )
     measured_runs = len(fixtures) * arguments.repetitions
@@ -330,7 +380,7 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
             },
         },
         "settings": {
-            "window_seconds": MAX_AUDIO_SECONDS,
+            "window_seconds": RING_SECONDS,
             "threads": arguments.threads,
             "keywords_score": arguments.keywords_score,
             "keywords_threshold": arguments.keywords_threshold,
@@ -376,6 +426,11 @@ def self_test() -> None:
         tested += 1
     assert tested >= 10
     assert percentile([4.0, 1.0, 3.0, 2.0], 0.95) == 4.0
+    ring = bytearray()
+    append_ring(ring, b"a" * (RING_SECONDS * SAMPLE_RATE * 2))
+    append_ring(ring, b"b" * 640)
+    assert len(ring) == RING_SECONDS * SAMPLE_RATE * 2
+    assert ring[:1] == b"a" and ring[-1:] == b"b"
     print("wake benchmark self-test passed")
 
 

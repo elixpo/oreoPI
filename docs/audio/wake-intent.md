@@ -47,8 +47,10 @@ the Oreo keyword tokens with the pinned sherpa CLI:
 rtk ./scripts/fetch-wake-model.sh
 ```
 
-Create the ignored local manifest and record all eight phrases. Each WAV must
-be no more than three seconds and must be 16 kHz mono PCM16:
+Create the ignored local manifest and record all eight phrases. Each source WAV
+must be no more than 15 seconds and must be 16 kHz mono PCM16. The harness
+streams the whole fixture through KWS but exposes only its rolling three-second
+window to Vosk, matching the runtime memory bound:
 
 ```bash
 rtk cp tests/audio/wake-fixtures.example.json tests/audio/wake-fixtures.local.json
