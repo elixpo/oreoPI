@@ -7,6 +7,8 @@ mod converter;
 mod cpal_io;
 mod metrics;
 mod pipeline;
+#[cfg(feature = "pocket-tts")]
+mod pocket_tts;
 mod pronunciation;
 mod stream;
 mod vad;
@@ -26,6 +28,8 @@ pub use cpal_io::{
 };
 pub use metrics::{LatencyMetric, LatencyReport, LatencyTargets, LatencyWindow};
 pub use pipeline::{PipelinePhase, PushToTalkState};
+#[cfg(feature = "pocket-tts")]
+pub use pocket_tts::{PocketTtsConfig, PocketTtsSynthesizer};
 pub use pronunciation::normalize_for_speech;
 pub use stream::{SpeechChunker, transcribe_source};
 pub use vad::{EnergyVad, VadConfig, VadDecision};
