@@ -16,8 +16,8 @@ from pathlib import Path
 TRAIN_SOURCE_SHA256 = "a9a994dd10203ef290a251f902e4181d832263876065a6b7c5dfc25f61ca293e"
 PIPER_REVISION = "213d4d561ab8a84f71de7dddac827cb07e92c031"
 FEATURE_DIGESTS = {
-    "melspectrogram.onnx": "a29f182c6cb55ac1f1369e82dc801376e4207c580409a6d11208bbcf32f78820",
-    "embedding_model.onnx": "ad8b2142cca2c9a0dce8349138fb2afc4d558a884ea5ff1c3f9439a87fff7cdb",
+    "melspectrogram.onnx": "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f",
+    "embedding_model.onnx": "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f",
 }
 REQUIRED_PACKAGES = {
     "openwakeword": "0.6.0",
@@ -216,6 +216,12 @@ def self_test() -> None:
     assert TFLITE_CALL not in patched
     assert TFLITE_REPLACEMENT in patched
     assert len(FEATURE_DIGESTS) == 2
+    root = paths()["root"]
+    recorded = (
+        (root / "scripts/fetch-openwakeword-assets.sh").read_text(encoding="utf-8")
+        + (root / "models/manifest.toml").read_text(encoding="utf-8")
+    )
+    assert all(recorded.count(digest) == 2 for digest in FEATURE_DIGESTS.values())
     print("openWakeWord training runner self-test passed")
 
 

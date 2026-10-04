@@ -11,8 +11,8 @@ release_url="https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
 files=(melspectrogram.onnx embedding_model.onnx)
 sizes=(1087958 1326578)
 digests=(
-  a29f182c6cb55ac1f1369e82dc801376e4207c580409a6d11208bbcf32f78820
-  ad8b2142cca2c9a0dce8349138fb2afc4d558a884ea5ff1c3f9439a87fff7cdb
+  ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f
+  70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f
 )
 
 verify_file() {
