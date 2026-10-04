@@ -114,6 +114,8 @@ def main() -> int:
             assert "oreo" in config["target_phrase"]
             assert "audio" in config["custom_negative_phrases"]
             assert "i bought oreo cookies" not in config["custom_negative_phrases"]
+            assert config["feature_data_files"] == {}
+            assert config["steps"] == 20_000
             print(
                 "openWakeWord config self-test passed: "
                 f"{len(config['target_phrase'])} targets, "

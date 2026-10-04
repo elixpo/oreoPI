@@ -1,0 +1,17 @@
+# ONNX-only training dependencies for openwakeword==0.6.0 on Python 3.11.
+# TensorFlow/onnx-tf are deliberately excluded; Oreo exports only ONNX.
+numpy==1.26.4
+torch==2.2.2
+torchaudio==2.2.2
+torchinfo==1.8.0
+torchmetrics==1.2.0
+speechbrain==0.5.16
+audiomentations==0.33.0
+torch-audiomentations==0.11.1
+acoustics==0.2.6
+mutagen==1.47.0
+pronouncing==0.2.0
+onnx==1.15.0
+pyyaml==6.0.2
+piper-phonemize==1.1.0
+webrtcvad==2.0.10

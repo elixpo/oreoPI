@@ -399,8 +399,23 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         model_path = arguments.openwakeword_model.resolve()
         if not model_path.is_file() or model_path.suffix != ".onnx":
             raise ValueError("custom openWakeWord ONNX model is missing")
+        feature_dir = root / "models/cache/openwakeword-v0.5.1-features"
+        feature_files = {
+            "melspectrogram": feature_dir / "melspectrogram.onnx",
+            "embedding": feature_dir / "embedding_model.onnx",
+        }
+        if any(not path.is_file() for path in feature_files.values()):
+            raise ValueError(
+                "openWakeWord feature models are missing; "
+                "run scripts/fetch-openwakeword-assets.sh"
+            )
         kws_id = model_path.stem
-        kws = Model(wakeword_models=[str(model_path)], inference_framework="onnx")
+        kws = Model(
+            wakeword_models=[str(model_path)],
+            inference_framework="onnx",
+            melspec_model_path=str(feature_files["melspectrogram"]),
+            embedding_model_path=str(feature_files["embedding"]),
+        )
     vosk.SetLogLevel(-1)
     vosk_model = vosk.Model(str(vosk_dir))
     load_ms = (time.perf_counter() - load_started) * 1000
@@ -513,6 +528,19 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
                 "id": vosk_id,
                 "archive_sha256": cached_digest(root, "vosk-small-en-us-0.15"),
             },
+            **(
+                {
+                    "feature_backbone": {
+                        "id": "openwakeword-v0.5.1-features",
+                        "melspectrogram_sha256": file_sha256(
+                            feature_files["melspectrogram"]
+                        ),
+                        "embedding_sha256": file_sha256(feature_files["embedding"]),
+                    }
+                }
+                if arguments.kws_engine == "openwakeword"
+                else {}
+            ),
         },
         "settings": {
             "window_seconds": RING_SECONDS,

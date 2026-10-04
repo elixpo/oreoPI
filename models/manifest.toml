@@ -130,3 +130,19 @@ retained_files = [
 streaming_chunk_ms = 160
 quantization = "int8 encoder and joiner"
 licence = "Apache-2.0"
+
+[[models]]
+id = "openwakeword-v0.5.1-features"
+engine = "openwakeword"
+engine_version = "0.6.0"
+language = "language-independent-features"
+role = "shared-wake-feature-backbone"
+source = "https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1"
+installed_directory = "openwakeword-v0.5.1-features"
+retained_files = ["melspectrogram.onnx", "embedding_model.onnx"]
+retained_sha256 = [
+  "a29f182c6cb55ac1f1369e82dc801376e4207c580409a6d11208bbcf32f78820",
+  "ad8b2142cca2c9a0dce8349138fb2afc4d558a884ea5ff1c3f9439a87fff7cdb",
+]
+retained_bytes = [1087958, 1326578]
+licence = "Apache-2.0 shared feature extraction models"

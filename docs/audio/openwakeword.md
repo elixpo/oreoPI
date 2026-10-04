@@ -42,6 +42,16 @@ rtk uv pip install --python .venv-wake/bin/python \
 Do not install openWakeWord into `.venv`; that environment remains the pinned
 STT/TTS benchmark environment.
 
+The wheel does not bundle the shared ONNX feature extractors. Cache the two
+small, checksum-pinned upstream files inside the repository:
+
+```bash
+rtk ./scripts/fetch-openwakeword-assets.sh
+```
+
+The runtime and benchmark receive these paths explicitly and never write model
+files into `.venv-wake`.
+
 ## Generate the training configuration
 
 The checked-in base config follows openWakeWord's official custom-model
@@ -60,11 +70,49 @@ download datasets or start training.
 
 ## Training gate
 
-The official training path requires synthetic positive generation, room
-impulse responses, background clips, false-positive validation features, and
-large negative feature data. Those downloads and the 50,000-step training job
-are deliberately separate operator stages. Do not start them until their
-licences, hashes, storage cost, and exact commands have been recorded.
+The official high-quality recipe includes a 17.28 GB negative feature file.
+That is excessive for the first laptop candidate. Oreo instead starts with
+10,000 synthetic identity samples, 10,000 generated confusable negatives, a
+2,000/2,000 validation split, and 20,000 training steps. Its negative
+validation features are derived from the held-out generated negatives. This is
+a cheap development model, not evidence of a production false-accept rate.
+
+Install the CPU-only training stack. PyTorch is installed from its CPU wheel
+index first so the environment does not pull unused CUDA libraries:
+
+```bash
+rtk uv pip install --python .venv-wake/bin/python \
+  --index-url https://download.pytorch.org/whl/cpu \
+  "torch==2.2.2" "torchaudio==2.2.2"
+
+rtk uv pip install --python .venv-wake/bin/python \
+  -r requirements/openwakeword-train.txt
+```
+
+Then fetch the two small shared feature models and bootstrap the pinned Piper
+sample generator. The bootstrap downloads one 204,089,915-byte English
+multi-speaker checkpoint and records its acquired SHA-256 locally:
+
+```bash
+rtk ./scripts/fetch-openwakeword-assets.sh
+rtk ./scripts/bootstrap-openwakeword-training.sh
+rtk .venv-wake/bin/python scripts/run-openwakeword-training.py preflight
+```
+
+The following are the long-running stages. Run them separately so a completed
+stage remains reusable after an interruption:
+
+```bash
+rtk .venv-wake/bin/python scripts/run-openwakeword-training.py phase generate
+rtk .venv-wake/bin/python scripts/run-openwakeword-training.py phase augment
+rtk .venv-wake/bin/python scripts/run-openwakeword-training.py phase train
+rtk .venv-wake/bin/python scripts/run-openwakeword-training.py install-candidate
+```
+
+The runner verifies the installed package versions and reviewed upstream
+`train.py`, supplies the repository-cached feature backbones, flattens held-out
+negative features for the validation interface, exports ONNX, and omits the
+unneeded TensorFlow/TFLite conversion.
 
 The first exported `oreo.onnx` is only a candidate. It must pass the existing
 eight-fixture cascade, new pronunciation/accent fixtures, television/music
