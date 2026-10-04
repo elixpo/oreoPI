@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "short-acknowledgement",
+      "text": "Done. Your five minute timer is running."
+    },
+    {
+      "id": "device-status",
+      "text": "Oreo is online. The battery is at eighty-seven percent, and the microphone is ready."
+    },
+    {
+      "id": "pronunciation",
+      "text": "Your Wi-Fi address is one hundred ninety-two dot one hundred sixty-eight dot one dot twelve. The API completed in forty-two milliseconds."
+    },
+    {
+      "id": "cancellation",
+      "text": "I can explain that in more detail, but you can interrupt me at any time and I will stop speaking immediately."
+    }
+  ]
+}

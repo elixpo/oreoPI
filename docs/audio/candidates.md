@@ -1,6 +1,6 @@
 # Audio engine candidates
 
-Status: laptop STT selection recorded for WP-004; soak and ARM confirmation pending
+Status: laptop STT selected; PocketTTS measurement pass prepared for WP-004
 
 The `oreo-audio` contracts intentionally contain no engine-specific types.
 Candidates become build or image dependencies only after they pass the same
@@ -11,7 +11,7 @@ and checksummed separately from application packages.
 |---|---|---|---|
 | Capture/playback | [CPAL 0.18.2](https://github.com/RustAudio/cpal/releases/tag/v0.18.2), selected | Direct ALSA adapter only if CPAL measurements require it | PipeWire/PulseAudio/ALSA behavior, callback overruns, fixed-buffer latency, AMD64/ARM64 packaging |
 | Offline STT | [Vosk 0.3.45](https://alphacephei.com/vosk/) with `vosk-model-small-en-us-0.15`, selected for the laptop profile | [sherpa-onnx 1.13.8](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8) with English-only 20M streaming Zipformer INT8 as the resource fallback | Accuracy on Oreo command fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
-| Streaming TTS | [PocketTTS 3.3.0](https://github.com/kyutai-labs/pocket-tts/releases/tag/v3.3.0) | Selected only after the primary misses a hard gate | First-audio latency, real-time factor, RSS, cancellation, pronunciation, voice/model licensing, AMD64/ARM64 packaging |
+| Streaming TTS | [PocketTTS 3.3.0](https://github.com/kyutai-labs/pocket-tts/releases/tag/v3.3.0), six-layer English model with dynamic int8 | Selected only after the primary misses a hard gate | First-audio latency, real-time factor, RSS, cancellation, pronunciation, voice/model licensing, AMD64/ARM64 packaging |
 
 ## Selection rules
 
@@ -31,8 +31,17 @@ and checksummed separately from application packages.
 Vosk is the selected laptop primary and low-resource baseline: its official
 small-model guidance targets mobile/Raspberry Pi-class systems, but its older
 native stack and accuracy must be measured against current sherpa-onnx models
-rather than assumed. PocketTTS source is MIT; the selected voice and model
-artefacts still require a separate licence/provenance review.
+rather than assumed. PocketTTS source is MIT. The gated model and selected
+Alba MacKenna voice are CC BY 4.0 and pinned independently in the model
+manifest; product attribution must cover both artefacts.
+
+The first TTS pass uses the six-layer default English model, not the larger
+24-layer variant. Dynamic int8 is enabled because upstream reports lower CPU
+memory and faster x86 inference without a measured WER change. This remains a
+candidate until Oreo measures warm first audio below 500 ms p95, faster-than-
+real-time generation, bounded cancellation, and acceptable spoken output on
+the same laptop. The model remains loaded between turns; cold model and voice
+load time is reported separately from the conversational path.
 
 The initial cache candidates are pinned in `models/manifest.toml`. The sherpa
 candidate is English-only and documented upstream as suitable for Cortex-A7;

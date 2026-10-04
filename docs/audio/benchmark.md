@@ -100,3 +100,48 @@ rtk env OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
 The release build is the acceptance measurement. A broader quiet/noisy fixture
 manifest and an AArch64 run remain required before the production image is
 approved; the fixed base recording closes only the repeatable laptop path.
+
+## PocketTTS candidate benchmark
+
+PocketTTS is evaluated separately because its Python/PyTorch reference runtime
+is not part of the daemon. The harness pins PocketTTS 3.3.0, the six-layer
+English model revisions, 24 kHz mono output, dynamic int8, and the reviewed
+`alba` voice. It measures cold model/voice loading separately from warm first
+audio, generation time, real-time factor, RSS, and cancellation. Generated WAV
+files and the Hugging Face cache are ignored by Git.
+
+First accept the gated model terms on the upstream Hugging Face page and make
+`HF_TOKEN` available to the process (or use `hf auth login`). Install the
+CPU-only build into the existing virtual environment; this is the large
+download and must not be added to a production image yet:
+
+```bash
+rtk .venv/bin/python -m pip install "pocket-tts==3.3.0" \
+  --extra-index-url https://download.pytorch.org/whl/cpu
+```
+
+The script automatically directs Hugging Face into
+`models/cache/huggingface`. Run the dependency-free check first, then the
+measured pass. The WAV directory is optional but recommended for the operator
+listening check:
+
+```bash
+rtk .venv/bin/python scripts/benchmark-tts.py self-test
+rtk .venv/bin/python scripts/benchmark-tts.py run \
+  --output target/audio-bench/pocket-tts.json \
+  --save-audio target/audio-bench/pocket-tts-wav
+```
+
+After the first authenticated download, repeat without network access to prove
+the device path is local and the cache is complete:
+
+```bash
+rtk .venv/bin/python scripts/benchmark-tts.py run --offline \
+  --output target/audio-bench/pocket-tts-offline.json
+```
+
+The laptop candidate gate is warm first-audio p95 below 500 ms, median real-
+time factor above 1.0, successful cancellation, and no invalid samples. Listen
+to every first-run WAV for intelligibility and pronunciation; numeric speed
+results cannot approve voice quality. Peak RSS is recorded now and compared
+against the final daemon/SBC memory budget before selection.
