@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import json
+import logging
 import shutil
 import subprocess
 import sys
@@ -20,7 +23,9 @@ FEATURE_DIGESTS = {
     "embedding_model.onnx": "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f",
 }
 REQUIRED_PACKAGES = {
+    "setuptools": "70.3.0",
     "openwakeword": "0.6.0",
+    "scipy": "1.13.1",
     "torch": "2.2.2",
     "torchaudio": "2.2.2",
     "torchinfo": "1.8.0",
@@ -141,6 +146,20 @@ def patch_audio_features(project: dict[str, Path]) -> None:
     utilities.AudioFeatures = CachedAudioFeatures
 
 
+def check_training_imports(project: dict[str, Path]) -> None:
+    piper_path = str(project["piper"])
+    sys.path.insert(0, piper_path)
+    try:
+        generator = importlib.import_module("generate_samples")
+        signature = inspect.signature(generator.generate_samples)
+        model = signature.parameters.get("model")
+        if model is None or model.default is inspect.Parameter.empty:
+            raise RuntimeError("Piper generator does not provide the reviewed default model")
+        importlib.import_module("openwakeword.train")
+    finally:
+        sys.path.remove(piper_path)
+
+
 def prepare_validation(project: dict[str, Path]) -> None:
     import numpy as np
 
@@ -170,6 +189,7 @@ def prepare_validation(project: dict[str, Path]) -> None:
 def run_phase(project: dict[str, Path], phase: str) -> None:
     check_packages()
     check_inputs(project)
+    check_training_imports(project)
     source_path, source = train_source()
     if phase == "train" and not project["negative_validation"].is_file():
         raise RuntimeError("validation features are missing; run the augment phase first")
@@ -238,6 +258,7 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO)
     arguments = parse_arguments()
     project = paths()
     try:
@@ -246,6 +267,7 @@ def main() -> int:
         elif arguments.command == "preflight":
             check_packages()
             check_inputs(project)
+            check_training_imports(project)
             train_source()
             config = json.loads(project["config"].read_text(encoding="utf-8"))
             if config["target_phrase"] != ["oreo", "orio"]:
