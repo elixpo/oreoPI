@@ -1,5 +1,6 @@
 /target/
 /.venv/
+/.venv-wake/
 __pycache__/
 /.elixpo/*
 !/.elixpo/project.yml
@@ -11,3 +12,4 @@ __pycache__/
 !.env.example
 /models/cache/*
 !/models/cache/.gitkeep
+/models/training/

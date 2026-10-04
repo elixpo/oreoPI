@@ -24,9 +24,10 @@ The laptop candidate uses a four-stage local cascade:
    address from Oreo product mentions, ordinary uses of “audio,” and
    near-sounding words such as “stereo.”
 
-The model is still a candidate until the recorded benchmark and background
-soak pass. The benchmark adapter is Python-only; the production daemon will
-receive a feature-gated native sherpa adapter after thresholds are selected.
+Both sherpa candidates missed natural Oreo recordings after threshold and
+boost tuning. The next candidate is a corpus-trained openWakeWord model behind
+an isolated worker; see `docs/audio/openwakeword.md`. No wake engine is selected
+until the recorded benchmark and background soak pass.
 
 ## Privacy and resource bounds
 
