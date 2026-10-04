@@ -1,6 +1,6 @@
 # PocketTTS laptop evaluation
 
-Status: Python reference performance passed; embedded runtime measurement pending
+Status: PocketTTS reference passed; sherpa PocketTTS rejected; Kitten evaluation pending
 
 The pinned PocketTTS 3.3.0 Python reference passed the laptop latency,
 throughput, offline-cache, and cancellation checks with dynamic int8 enabled.
@@ -41,3 +41,17 @@ instructions use two steps and identify this setting as the quality/speed
 tradeoff, so the selection measurement is repeated at two. The five-step
 result remains recorded as evidence rather than being presented as the runtime
 default.
+
+The official two-step configuration still measured 1,624 ms first-audio p95
+despite a much better 353,452 KiB loaded RSS and 629,572 KiB peak. The operator
+also found the start of every utterance blurry and the overall voice worse than
+the Python reference. Sherpa PocketTTS is therefore rejected as Oreo's primary;
+one flow step is not evaluated because it explicitly trades away more quality
+and cannot repair the first-word defect.
+
+The next low-resource candidate is Kitten TTS Nano 0.8 int8. It is English-only,
+has 15 million parameters and eight voices, uses the same sherpa-onnx Rust API,
+and has a 31 MB published archive. This is a better fit for Oreo's least-weight
+requirement than immediately testing the 129 MB, 31-language Supertonic model.
+PocketTTS remains the laptop quality reference and proof that WP-004's
+PocketTTS streaming path works; the device backend remains replaceable.

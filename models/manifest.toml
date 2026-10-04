@@ -73,3 +73,18 @@ installed_directory = "sherpa-onnx-pocket-tts-int8-2026-01-26"
 upstream_sha256 = "2f3b88823cbbb9bf0b2477ec8ae7b3fec417b3a87b6bb5f256dba66f2ad967cb"
 quantization = "int8"
 licence = "CC-BY-4.0 model; Apache-2.0 runtime"
+
+[[models]]
+id = "kitten-nano-en-v0_8-int8"
+engine = "sherpa-onnx"
+engine_version = "1.13.8"
+language = "en"
+role = "low-resource-tts-candidate"
+source = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kitten-nano-en-v0_8-int8.tar.bz2"
+archive_bytes = 31220690
+installed_directory = "kitten-nano-en-v0_8-int8"
+upstream_sha256 = "6fa5be852612ce761094ba74ee6123b4fc4acfefa79bf64dc63acae4a83af2fd"
+sample_rate_hz = 24000
+speakers = 8
+quantization = "int8"
+licence = "Apache-2.0"

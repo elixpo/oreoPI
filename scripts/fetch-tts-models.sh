@@ -4,10 +4,24 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 cache_dir="$repo_root/models/cache"
-model_id="sherpa-onnx-pocket-tts-int8-2026-01-26"
+model_kind="${1:-pocket}"
+case "$model_kind" in
+  pocket)
+    model_id="sherpa-onnx-pocket-tts-int8-2026-01-26"
+    archive_bytes="98336520"
+    archive_sha256="2f3b88823cbbb9bf0b2477ec8ae7b3fec417b3a87b6bb5f256dba66f2ad967cb"
+    ;;
+  kitten)
+    model_id="kitten-nano-en-v0_8-int8"
+    archive_bytes="31220690"
+    archive_sha256="6fa5be852612ce761094ba74ee6123b4fc4acfefa79bf64dc63acae4a83af2fd"
+    ;;
+  *)
+    echo "usage: $0 [pocket|kitten]" >&2
+    exit 2
+    ;;
+esac
 archive_name="$model_id.tar.bz2"
-archive_bytes="98336520"
-archive_sha256="2f3b88823cbbb9bf0b2477ec8ae7b3fec417b3a87b6bb5f256dba66f2ad967cb"
 destination="$cache_dir/$model_id"
 
 mkdir -p -- "$cache_dir"
@@ -23,17 +37,29 @@ trap 'exit 130' HUP INT TERM
 validate_model() {
   local root="$1"
   local required
-  for required in \
-    lm_flow.int8.onnx \
-    lm_main.int8.onnx \
-    encoder.onnx \
-    decoder.int8.onnx \
-    text_conditioner.onnx \
-    vocab.json \
-    token_scores.json \
-    test_wavs/bria.wav
+  local required_files=()
+  if [[ "$model_kind" == "pocket" ]]; then
+    required_files=(
+      lm_flow.int8.onnx
+      lm_main.int8.onnx
+      encoder.onnx
+      decoder.int8.onnx
+      text_conditioner.onnx
+      vocab.json
+      token_scores.json
+      test_wavs/bria.wav
+    )
+  else
+    required_files=(
+      model.int8.onnx
+      voices.bin
+      tokens.txt
+      espeak-ng-data
+    )
+  fi
+  for required in "${required_files[@]}"
   do
-    if [[ ! -f "$root/$required" ]]; then
+    if [[ ! -e "$root/$required" ]]; then
       echo "error: TTS model is missing $required" >&2
       return 1
     fi

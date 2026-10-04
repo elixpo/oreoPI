@@ -178,3 +178,28 @@ Do not add the Rust dependency until this report demonstrates materially lower
 RSS, acceptable first-audio latency, correct cancellation, and acceptable
 spoken output. This avoids committing the daemon to a native runtime based on
 archive size alone.
+
+### Kitten Nano low-resource comparison
+
+Sherpa PocketTTS reduced memory but failed latency and listening quality. Fetch
+the checksum-pinned English-only Kitten Nano 0.8 int8 model next:
+
+```bash
+rtk ./scripts/fetch-tts-models.sh kitten
+```
+
+Benchmark speaker zero first using the same fixtures. Kitten exposes eight
+speaker IDs (`0` through `7`); only compare other voices after the default
+passes the resource and latency gates.
+
+```bash
+rtk .venv/bin/python scripts/benchmark-tts.py run \
+  --engine kitten-onnx \
+  --speaker 0 \
+  --output target/audio-bench/kitten-nano.json \
+  --save-audio target/audio-bench/kitten-nano-wav
+```
+
+The operator must specifically check the first word, numbers, acronyms, and IP
+address. A fast report does not override clipped, blurry, or mispronounced
+speech.

@@ -41,7 +41,7 @@ def parse_arguments() -> argparse.Namespace:
     run = subcommands.add_parser("run", help="run the PocketTTS benchmark")
     run.add_argument(
         "--engine",
-        choices=("pocket-python", "sherpa-onnx"),
+        choices=("pocket-python", "sherpa-onnx", "kitten-onnx"),
         default="pocket-python",
     )
     run.add_argument(
@@ -58,6 +58,7 @@ def parse_arguments() -> argparse.Namespace:
         help="sherpa PocketTTS flow steps; upstream currently recommends 2",
     )
     run.add_argument("--voice", default="alba")
+    run.add_argument("--speaker", type=int, default=0)
     run.add_argument("--model", type=Path)
     run.add_argument("--reference-audio", type=Path)
     run.add_argument("--output", type=Path)
@@ -178,8 +179,10 @@ def cached_digest(path: Path) -> str:
 
 
 def run_sherpa_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
-    if not 1 <= arguments.steps <= 5:
+    if arguments.engine == "sherpa-onnx" and not 1 <= arguments.steps <= 5:
         raise ValueError("sherpa PocketTTS steps must be 1-5")
+    if arguments.engine == "kitten-onnx" and not 0 <= arguments.speaker <= 7:
+        raise ValueError("Kitten speaker must be 0-7")
     try:
         import numpy as np
         import sherpa_onnx
@@ -193,43 +196,73 @@ def run_sherpa_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         raise RuntimeError(
             f"expected sherpa-onnx==1.13.8, found sherpa-onnx=={installed}"
         )
-    model_id = "sherpa-onnx-pocket-tts-int8-2026-01-26"
+    is_pocket = arguments.engine == "sherpa-onnx"
+    model_id = (
+        "sherpa-onnx-pocket-tts-int8-2026-01-26"
+        if is_pocket
+        else "kitten-nano-en-v0_8-int8"
+    )
     model = (
         arguments.model or arguments.repo_root / "models/cache" / model_id
     ).resolve()
-    reference_audio_path = (
-        arguments.reference_audio or model / "test_wavs/bria.wav"
-    ).resolve()
-    required = {
-        "lm_flow": model / "lm_flow.int8.onnx",
-        "lm_main": model / "lm_main.int8.onnx",
-        "encoder": model / "encoder.onnx",
-        "decoder": model / "decoder.int8.onnx",
-        "text_conditioner": model / "text_conditioner.onnx",
-        "vocab_json": model / "vocab.json",
-        "token_scores_json": model / "token_scores.json",
-    }
-    if not model.is_dir() or any(not path.is_file() for path in required.values()):
-        raise ValueError(f"sherpa PocketTTS model is incomplete: {model}")
-    if not reference_audio_path.is_file():
-        raise ValueError(f"reference audio does not exist: {reference_audio_path}")
-    reference_audio, reference_sample_rate = load_pcm16_wav(reference_audio_path)
     fixtures = load_fixtures(arguments.manifest.resolve())
-
-    pocket = sherpa_onnx.OfflineTtsPocketModelConfig(
-        **{name: str(path) for name, path in required.items()},
-        voice_embedding_cache_capacity=1,
-    )
-    config = sherpa_onnx.OfflineTtsConfig(
-        model=sherpa_onnx.OfflineTtsModelConfig(
-            pocket=pocket,
+    if is_pocket:
+        reference_audio_path = (
+            arguments.reference_audio or model / "test_wavs/bria.wav"
+        ).resolve()
+        required = {
+            "lm_flow": model / "lm_flow.int8.onnx",
+            "lm_main": model / "lm_main.int8.onnx",
+            "encoder": model / "encoder.onnx",
+            "decoder": model / "decoder.int8.onnx",
+            "text_conditioner": model / "text_conditioner.onnx",
+            "vocab_json": model / "vocab.json",
+            "token_scores_json": model / "token_scores.json",
+        }
+        if not model.is_dir() or any(
+            not path.is_file() for path in required.values()
+        ):
+            raise ValueError(f"sherpa PocketTTS model is incomplete: {model}")
+        if not reference_audio_path.is_file():
+            raise ValueError(
+                f"reference audio does not exist: {reference_audio_path}"
+            )
+        reference_audio, reference_sample_rate = load_pcm16_wav(
+            reference_audio_path
+        )
+        backend = sherpa_onnx.OfflineTtsModelConfig(
+            pocket=sherpa_onnx.OfflineTtsPocketModelConfig(
+                **{name: str(path) for name, path in required.items()},
+                voice_embedding_cache_capacity=1,
+            ),
             num_threads=arguments.threads,
             debug=False,
             provider="cpu",
         )
+        voice_name = reference_audio_path.name
+    else:
+        required = {
+            "model": model / "model.int8.onnx",
+            "voices": model / "voices.bin",
+            "tokens": model / "tokens.txt",
+            "data_dir": model / "espeak-ng-data",
+        }
+        if not model.is_dir() or any(not path.exists() for path in required.values()):
+            raise ValueError(f"Kitten TTS model is incomplete: {model}")
+        backend = sherpa_onnx.OfflineTtsModelConfig(
+            kitten=sherpa_onnx.OfflineTtsKittenModelConfig(
+                **{name: str(path) for name, path in required.items()}
+            ),
+            num_threads=arguments.threads,
+            debug=False,
+            provider="cpu",
+        )
+        voice_name = f"speaker-{arguments.speaker}"
+    config = sherpa_onnx.OfflineTtsConfig(
+        model=backend
     )
     if not config.validate():
-        raise RuntimeError("sherpa PocketTTS configuration is invalid")
+        raise RuntimeError("sherpa TTS configuration is invalid")
 
     rss_before_load = resident_memory_kib()
     load_started = time.monotonic()
@@ -243,9 +276,12 @@ def run_sherpa_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     rss_after_load = resident_memory_kib()
 
     generation_config = sherpa_onnx.GenerationConfig()
-    generation_config.reference_audio = reference_audio
-    generation_config.reference_sample_rate = reference_sample_rate
-    generation_config.num_steps = arguments.steps
+    if is_pocket:
+        generation_config.reference_audio = reference_audio
+        generation_config.reference_sample_rate = reference_sample_rate
+        generation_config.num_steps = arguments.steps
+    else:
+        generation_config.sid = arguments.speaker
 
     runs: list[dict[str, object]] = []
     for repetition in range(arguments.repetitions):
@@ -320,12 +356,14 @@ def run_sherpa_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     digest_path = arguments.repo_root / "models/cache" / f"{model_id}.sha256.local"
     return {
         "schema_version": 1,
-        "engine": "sherpa-onnx-pocket-tts",
+        "engine": (
+            "sherpa-onnx-pocket-tts" if is_pocket else "sherpa-onnx-kitten-tts"
+        ),
         "package_version": installed,
         "language": "english",
-        "voice": reference_audio_path.name,
+        "voice": voice_name,
         "quantized": True,
-        "generation_steps": arguments.steps,
+        "generation_steps": arguments.steps if is_pocket else None,
         "model_archive_sha256": cached_digest(digest_path),
         "sample_rate": model_instance.sample_rate,
         "threads": arguments.threads,
@@ -359,7 +397,7 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         raise ValueError("repetitions must be 1-100")
     if not 1 <= arguments.threads <= 16:
         raise ValueError("threads must be 1-16")
-    if arguments.engine == "sherpa-onnx":
+    if arguments.engine in ("sherpa-onnx", "kitten-onnx"):
         return run_sherpa_benchmark(arguments)
     if arguments.voice != "alba":
         raise ValueError("only the reviewed alba voice is allowed in this pass")
