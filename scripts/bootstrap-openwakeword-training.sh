@@ -15,6 +15,8 @@ mkdir -p -- \
   "$training_root/data/background_clips" \
   "$training_root/output"
 
+"$repo_root/scripts/fetch-openwakeword-assets.sh"
+
 if [[ -d "$piper_root/.git" ]]; then
   actual_revision="$(git -C "$piper_root" rev-parse HEAD)"
   if [[ "$actual_revision" != "$piper_revision" ]]; then

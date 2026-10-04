@@ -112,7 +112,12 @@ def check_inputs(project: dict[str, Path], require_generated: bool = True) -> No
         raise RuntimeError("Piper generator checkpoint is missing or incomplete")
     for name, expected in FEATURE_DIGESTS.items():
         path = project["feature_dir"] / name
-        if not path.is_file() or sha256(path) != expected:
+        if not path.is_file():
+            raise RuntimeError(
+                f"cached openWakeWord feature model is missing: {name}; "
+                "run scripts/fetch-openwakeword-assets.sh"
+            )
+        if sha256(path) != expected:
             raise RuntimeError(f"cached openWakeWord feature model is invalid: {name}")
 
 
