@@ -33,6 +33,21 @@ train	wake	audio
 train	wake	audio are you listening
 train	wake	wake up audio
 train	wake	audio can you help
+train	wake	oreo what should we do next
+train	wake	what can you see oreo
+train	wake	oreo where did i leave off
+train	wake	where are we going oreo
+train	wake	oreo when should i leave
+train	wake	when does the timer end oreo
+train	wake	oreo how does this work
+train	wake	how can i fix this oreo
+train	wake	oreo why did that happen
+train	wake	which option is better oreo
+train	wake	oreo summarize my notifications
+train	wake	please switch on the lamp oreo
+train	wake	oreo start a new countdown
+train	wake	would you repeat that audio
+train	wake	can we begin now oreo
 train	ignore	i bought oreo cookies
 train	ignore	oreo is a cookie brand
 train	ignore	do you want some oreos
@@ -67,6 +82,21 @@ train	ignore	oreo sales increased this month
 train	ignore	the oreo wrapper is recyclable
 train	ignore	put oreos beside the milk
 train	ignore	she ordered an oreo milkshake
+train	ignore	what is oreo made from
+train	ignore	where are oreos sold
+train	ignore	when was oreo introduced
+train	ignore	how are oreo cookies manufactured
+train	ignore	why is oreo so popular
+train	ignore	which oreo package is cheaper
+train	ignore	what does the audio recording contain
+train	ignore	where is the audio file stored
+train	ignore	when was this audio recorded
+train	ignore	how was the audio processed
+train	ignore	tell me the price of oreos
+train	ignore	show me a picture of oreo
+train	ignore	we discussed the history of oreo
+train	ignore	the taste of oreo is distinctive
+train	ignore	she bought a box of oreos
 test	wake	oreo could you listen to me
 test	wake	wake up orio
 test	wake	are you listening oreo

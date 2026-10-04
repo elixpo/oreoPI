@@ -5,7 +5,7 @@ use oreo_core::CancellationToken;
 use crate::{AudioError, AudioErrorKind, AudioFormat, PcmChunk, STT_FORMAT};
 
 const MAX_WAKE_TEXT_BYTES: usize = 512;
-const WAKE_INTENT_THRESHOLD: f64 = 5.0;
+const WAKE_INTENT_THRESHOLD: f64 = 1.0;
 const EMBEDDED_CORPUS: &str = include_str!("../../../config/wake-intent-corpus.tsv");
 const EMBEDDED_ALIASES: &str = include_str!("../../../config/wake-identity-aliases.txt");
 
@@ -89,11 +89,10 @@ pub struct WakeIntentDecision {
     pub score: f64,
 }
 
-/// Tiny multinomial Naive Bayes classifier trained from the reviewed corpus.
+/// Tiny Bernoulli Naive Bayes classifier trained from the reviewed corpus.
 pub struct WakeIntentClassifier {
     aliases: HashSet<String>,
     weights: HashMap<String, [u32; 2]>,
-    feature_totals: [u32; 2],
     document_totals: [u32; 2],
 }
 
@@ -120,7 +119,6 @@ impl WakeIntentClassifier {
         let mut classifier = Self {
             aliases,
             weights: HashMap::new(),
-            feature_totals: [0; 2],
             document_totals: [0; 2],
         };
         for line in corpus.lines() {
@@ -140,9 +138,10 @@ impl WakeIntentClassifier {
                 _ => return Err(classifier_error()),
             };
             classifier.document_totals[class] += 1;
-            for feature in features(text, &classifier.aliases) {
+            let document_features: HashSet<_> =
+                features(text, &classifier.aliases).into_iter().collect();
+            for feature in document_features {
                 classifier.weights.entry(feature).or_insert([0; 2])[class] += 1;
-                classifier.feature_totals[class] += 1;
             }
         }
         if classifier.document_totals.iter().any(|count| *count < 10)
@@ -165,17 +164,20 @@ impl WakeIntentClassifier {
                 "wake transcript is empty or too large",
             ));
         }
-        let vocabulary = f64::from(u32::try_from(self.weights.len()).unwrap_or(u32::MAX));
         let documents = f64::from(self.document_totals[0] + self.document_totals[1]);
         let mut scores = [0.0_f64; 2];
         for (class, score) in scores.iter_mut().enumerate() {
             *score = ((f64::from(self.document_totals[class]) + 1.0) / (documents + 2.0)).ln();
         }
-        for feature in features(transcript, &self.aliases) {
-            let counts = self.weights.get(&feature).copied().unwrap_or([0; 2]);
+        let transcript_features: HashSet<_> =
+            features(transcript, &self.aliases).into_iter().collect();
+        for feature in transcript_features {
+            let Some(counts) = self.weights.get(&feature).copied() else {
+                continue;
+            };
             for (class, score) in scores.iter_mut().enumerate() {
                 *score += ((f64::from(counts[class]) + 1.0)
-                    / (f64::from(self.feature_totals[class]) + vocabulary))
+                    / (f64::from(self.document_totals[class]) + 2.0))
                     .ln();
             }
         }
@@ -212,7 +214,6 @@ fn features(text: &str, aliases: &HashSet<String>) -> Vec<String> {
             }
         })
         .collect();
-    let normalized = words.join(" ");
     let mut output = Vec::new();
     if let Some(first) = words.first() {
         output.push(format!("first:{first}"));
@@ -225,11 +226,6 @@ fn features(text: &str, aliases: &HashSet<String>) -> Vec<String> {
     }
     for pair in words.windows(2) {
         output.push(format!("b:{}_{}", pair[0], pair[1]));
-    }
-    let padded = format!("  {normalized}  ");
-    let characters: Vec<char> = padded.chars().collect();
-    for gram in characters.windows(3) {
-        output.push(format!("c:{}{}{}", gram[0], gram[1], gram[2]));
     }
     output
 }

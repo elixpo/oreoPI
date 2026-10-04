@@ -26,7 +26,7 @@ RING_SECONDS = 3
 MAX_FIXTURE_SECONDS = 15
 MAX_FIXTURES = 64
 MAX_TRANSCRIPT_BYTES = 512
-INTENT_THRESHOLD = 5.0
+INTENT_THRESHOLD = 1.0
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class Fixture:
 
 
 class IntentClassifier:
-    """Small multinomial Naive Bayes model matching the Rust runtime."""
+    """Small Bernoulli Naive Bayes model matching the Rust runtime."""
 
     def __init__(self, corpus: Path, aliases: Path) -> None:
         self.aliases = {
@@ -50,7 +50,6 @@ class IntentClassifier:
         if not 1 <= len(self.aliases) <= 16:
             raise ValueError("wake identity alias list is incomplete or too large")
         self.weights: dict[str, list[int]] = {}
-        self.feature_totals = [0, 0]
         self.document_totals = [0, 0]
         for raw_line in corpus.read_text(encoding="utf-8").splitlines():
             if not raw_line or raw_line.startswith("#"):
@@ -65,10 +64,9 @@ class IntentClassifier:
                 raise ValueError("wake intent corpus has an invalid label")
             category = int(label == "wake")
             self.document_totals[category] += 1
-            for feature in features(text, self.aliases):
+            for feature in set(features(text, self.aliases)):
                 counts = self.weights.setdefault(feature, [0, 0])
                 counts[category] += 1
-                self.feature_totals[category] += 1
         if min(self.document_totals) < 10 or not self.weights:
             raise ValueError("wake intent corpus is incomplete")
 
@@ -78,18 +76,19 @@ class IntentClassifier:
             or len(transcript.encode("utf-8")) > MAX_TRANSCRIPT_BYTES
         ):
             return False, float("-inf")
-        vocabulary = len(self.weights)
         documents = sum(self.document_totals)
         scores = [
             math.log((count + 1) / (documents + 2))
             for count in self.document_totals
         ]
-        for feature in features(transcript, self.aliases):
-            counts = self.weights.get(feature, [0, 0])
+        for feature in set(features(transcript, self.aliases)):
+            counts = self.weights.get(feature)
+            if counts is None:
+                continue
             for category in range(2):
                 scores[category] += math.log(
                     (counts[category] + 1)
-                    / (self.feature_totals[category] + vocabulary)
+                    / (self.document_totals[category] + 2)
                 )
         score = scores[1] - scores[0]
         return score >= INTENT_THRESHOLD, score
@@ -101,13 +100,10 @@ def features(text: str, aliases: set[str]) -> list[str]:
         "assistantname" if word in aliases else word
         for word in lexical
     ]
-    normalized = " ".join(words)
     output = [f"w:{word}" for word in words]
     if words:
         output.extend((f"first:{words[0]}", f"last:{words[-1]}"))
     output.extend(f"b:{left}_{right}" for left, right in zip(words, words[1:]))
-    padded = f"  {normalized}  "
-    output.extend(f"c:{padded[index:index + 3]}" for index in range(len(padded) - 2))
     return output
 
 
