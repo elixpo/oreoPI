@@ -21,6 +21,8 @@ from pathlib import Path
 
 SAMPLE_RATE = 16_000
 CHUNK_FRAMES = 320
+OPENWAKEWORD_CHUNK_FRAMES = 1_280
+OPENWAKEWORD_POST_ROLL_FRAMES = SAMPLE_RATE
 TAIL_FRAMES = 10_560
 RING_SECONDS = 3
 MAX_FIXTURE_SECONDS = 15
@@ -121,8 +123,17 @@ def parse_arguments() -> argparse.Namespace:
     run.add_argument(
         "--kws-model", choices=("english", "bilingual"), default="english"
     )
+    run.add_argument(
+        "--kws-engine", choices=("sherpa", "openwakeword"), default="sherpa"
+    )
     run.add_argument("--keywords-score", type=float, default=1.5)
     run.add_argument("--keywords-threshold", type=float, default=0.20)
+    run.add_argument(
+        "--openwakeword-model",
+        type=Path,
+        default=root / "models/cache/openwakeword-oreo/oreo.onnx",
+    )
+    run.add_argument("--openwakeword-threshold", type=float, default=0.5)
     run.add_argument("--output", type=Path)
     run.set_defaults(repo_root=root)
     return parser.parse_args()
@@ -249,35 +260,66 @@ def detect_keyword(kws: object, np: object, pcm: bytes) -> tuple[str, bytes]:
     return "", b""
 
 
+def detect_openwakeword(
+    model: object, np: object, pcm: bytes, threshold: float
+) -> tuple[str, bytes, float]:
+    model.reset()
+    ring = bytearray()
+    best_score = 0.0
+    detected_label = ""
+    detected_score = 0.0
+    post_roll_frames = 0
+    for offset in range(0, len(pcm), OPENWAKEWORD_CHUNK_FRAMES * 2):
+        audio_chunk = pcm[offset : offset + OPENWAKEWORD_CHUNK_FRAMES * 2]
+        append_ring(ring, audio_chunk)
+        if detected_label:
+            post_roll_frames += len(audio_chunk) // 2
+            if post_roll_frames >= OPENWAKEWORD_POST_ROLL_FRAMES:
+                return detected_label, bytes(ring), detected_score
+            continue
+        model_chunk = audio_chunk
+        if len(model_chunk) < OPENWAKEWORD_CHUNK_FRAMES * 2:
+            model_chunk += bytes(OPENWAKEWORD_CHUNK_FRAMES * 2 - len(model_chunk))
+        samples = np.frombuffer(model_chunk, dtype="<i2")
+        predictions = model.predict(samples)
+        if not isinstance(predictions, dict) or not predictions:
+            raise RuntimeError("openWakeWord returned no model scores")
+        label, raw_score = max(
+            predictions.items(),
+            key=lambda item: float(np.asarray(item[1]).reshape(-1)[-1]),
+        )
+        score = float(np.asarray(raw_score).reshape(-1)[-1])
+        if score > best_score:
+            best_score = score
+        if score >= threshold:
+            detected_label, detected_score = str(label), score
+    if detected_label:
+        return detected_label, bytes(ring), detected_score
+    return "", b"", best_score
+
+
 def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     if not 1 <= arguments.repetitions <= 20 or not 1 <= arguments.threads <= 4:
         raise ValueError("repetitions must be 1-20 and threads must be 1-4")
-    if (
+    if arguments.kws_engine == "sherpa" and (
         not 0 < arguments.keywords_threshold <= 1
         or not 0 < arguments.keywords_score <= 10
     ):
         raise ValueError("keyword score/threshold are outside safe benchmark bounds")
+    if not 0 < arguments.openwakeword_threshold <= 1:
+        raise ValueError("openWakeWord threshold must be greater than zero and at most one")
     try:
         import numpy as np
-        import sherpa_onnx
         import vosk
     except ImportError as error:
-        raise RuntimeError(
-            "wake benchmark requires numpy, sherpa-onnx, and vosk"
-        ) from error
+        raise RuntimeError("wake benchmark requires numpy and vosk") from error
 
     package_versions = {
-        "sherpa_onnx": importlib.metadata.version("sherpa-onnx"),
         "vosk": importlib.metadata.version("vosk"),
         "numpy": importlib.metadata.version("numpy"),
     }
-    if (
-        package_versions["sherpa_onnx"] != "1.13.8"
-        or package_versions["vosk"] != "0.3.45"
-    ):
-        raise RuntimeError(
-            "wake benchmark requires sherpa-onnx==1.13.8 and vosk==0.3.45"
-        )
+    if package_versions["vosk"] != "0.3.45":
+        raise RuntimeError("wake benchmark requires vosk==0.3.45")
 
     root = arguments.repo_root
     kws_specs = {
@@ -294,29 +336,10 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
             "joiner": "joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
         },
     }
-    kws_spec = kws_specs[arguments.kws_model]
-    kws_id = str(kws_spec["id"])
-    kws_dir = root / "models/cache" / kws_id
     vosk_id = "vosk-model-small-en-us-0.15"
     vosk_dir = root / "models/cache" / vosk_id
-    files = {
-        "tokens": kws_dir / "tokens.txt",
-        "encoder": kws_dir / str(kws_spec["encoder"]),
-        "decoder": kws_dir / str(kws_spec["decoder"]),
-        "joiner": kws_dir / str(kws_spec["joiner"]),
-        "keywords_file": kws_dir / "oreo-keywords.txt",
-    }
-    if any(not path.is_file() for path in files.values()) or not vosk_dir.is_dir():
-        raise ValueError("wake or Vosk model is not completely cached")
-    keyword_lines = [
-        line.strip()
-        for line in files["keywords_file"].read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    if len(keyword_lines) != 1 or not keyword_lines[0].endswith(" @OREO"):
-        raise ValueError(
-            "wake keywords are stale; run scripts/fetch-wake-model.sh to refresh them"
-        )
+    if not vosk_dir.is_dir():
+        raise ValueError("Vosk model is not completely cached")
     fixtures = load_fixtures(arguments.manifest)
     classifier = IntentClassifier(
         root / "config/wake-intent-corpus.tsv",
@@ -324,13 +347,60 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     )
     rss_before = resident_memory_kib()
     load_started = time.perf_counter()
-    kws = sherpa_onnx.KeywordSpotter(
-        **{name: str(path) for name, path in files.items()},
-        num_threads=arguments.threads,
-        keywords_score=arguments.keywords_score,
-        keywords_threshold=arguments.keywords_threshold,
-        provider="cpu",
-    )
+    keyword_lines: list[str] = []
+    files: dict[str, Path] = {}
+    kws_id: str
+    if arguments.kws_engine == "sherpa":
+        try:
+            import sherpa_onnx
+        except ImportError as error:
+            raise RuntimeError("sherpa benchmark requires sherpa-onnx") from error
+        package_versions["sherpa_onnx"] = importlib.metadata.version("sherpa-onnx")
+        if package_versions["sherpa_onnx"] != "1.13.8":
+            raise RuntimeError("sherpa benchmark requires sherpa-onnx==1.13.8")
+        kws_spec = kws_specs[arguments.kws_model]
+        kws_id = str(kws_spec["id"])
+        kws_dir = root / "models/cache" / kws_id
+        files = {
+            "tokens": kws_dir / "tokens.txt",
+            "encoder": kws_dir / str(kws_spec["encoder"]),
+            "decoder": kws_dir / str(kws_spec["decoder"]),
+            "joiner": kws_dir / str(kws_spec["joiner"]),
+            "keywords_file": kws_dir / "oreo-keywords.txt",
+        }
+        if any(not path.is_file() for path in files.values()):
+            raise ValueError("sherpa wake model is not completely cached")
+        keyword_lines = [
+            line.strip()
+            for line in files["keywords_file"].read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if len(keyword_lines) != 1 or not keyword_lines[0].endswith(" @OREO"):
+            raise ValueError(
+                "wake keywords are stale; run scripts/fetch-wake-model.sh to refresh them"
+            )
+        kws = sherpa_onnx.KeywordSpotter(
+            **{name: str(path) for name, path in files.items()},
+            num_threads=arguments.threads,
+            keywords_score=arguments.keywords_score,
+            keywords_threshold=arguments.keywords_threshold,
+            provider="cpu",
+        )
+    else:
+        try:
+            from openwakeword.model import Model
+        except ImportError as error:
+            raise RuntimeError(
+                "openWakeWord benchmark requires openwakeword==0.6.0"
+            ) from error
+        package_versions["openwakeword"] = importlib.metadata.version("openwakeword")
+        if package_versions["openwakeword"] != "0.6.0":
+            raise RuntimeError("openWakeWord benchmark requires openwakeword==0.6.0")
+        model_path = arguments.openwakeword_model.resolve()
+        if not model_path.is_file() or model_path.suffix != ".onnx":
+            raise ValueError("custom openWakeWord ONNX model is missing")
+        kws_id = model_path.stem
+        kws = Model(wakeword_models=[str(model_path)], inference_framework="onnx")
     vosk.SetLogLevel(-1)
     vosk_model = vosk.Model(str(vosk_dir))
     load_ms = (time.perf_counter() - load_started) * 1000
@@ -345,7 +415,13 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         runs: list[dict[str, object]] = []
         for _ in range(arguments.repetitions):
             started = time.perf_counter()
-            keyword, candidate_pcm = detect_keyword(kws, np, fixture.pcm)
+            if arguments.kws_engine == "sherpa":
+                keyword, candidate_pcm = detect_keyword(kws, np, fixture.pcm)
+                candidate_score = None
+            else:
+                keyword, candidate_pcm, candidate_score = detect_openwakeword(
+                    kws, np, fixture.pcm, arguments.openwakeword_threshold
+                )
             transcript = (
                 vosk_transcript(vosk, vosk_model, candidate_pcm) if keyword else ""
             )
@@ -363,6 +439,7 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
             runs.append(
                 {
                     "keyword": keyword,
+                    "candidate_score": candidate_score,
                     "transcript": transcript,
                     "intent_score": intent_score,
                     "window_ms": len(candidate_pcm) * 1000 // (SAMPLE_RATE * 2),
@@ -378,6 +455,11 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
             for run in runs
             if run["intent_score"] is not None
         ]
+        candidate_scores = [
+            float(run["candidate_score"])
+            for run in runs
+            if run["candidate_score"] is not None
+        ]
         results.append(
             {
                 "id": fixture.fixture_id,
@@ -386,6 +468,9 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
                 "reference": fixture.reference,
                 "expected_wake": fixture.expected_wake,
                 "keyword": representative[0],
+                "candidate_score_median": (
+                    statistics.median(candidate_scores) if candidate_scores else None
+                ),
                 "transcript": representative[1],
                 "accepted": representative[2],
                 "stable": len(
@@ -407,14 +492,22 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     measured_runs = len(fixtures) * arguments.repetitions
     return {
         "schema_version": 1,
-        "pipeline": "sherpa-kws-vosk-intent",
+        "pipeline": f"{arguments.kws_engine}-kws-vosk-intent",
         "packages": package_versions,
         "models": {
             "kws": {
                 "id": kws_id,
-                "archive_sha256": cached_digest(root, kws_id),
-                "keywords_sha256": file_sha256(files["keywords_file"]),
-                "keyword_entries": len(keyword_lines),
+                **(
+                    {
+                        "archive_sha256": cached_digest(root, kws_id),
+                        "keywords_sha256": file_sha256(files["keywords_file"]),
+                        "keyword_entries": len(keyword_lines),
+                    }
+                    if arguments.kws_engine == "sherpa"
+                    else {
+                        "model_sha256": file_sha256(arguments.openwakeword_model),
+                    }
+                ),
             },
             "stt": {
                 "id": vosk_id,
@@ -423,10 +516,21 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         },
         "settings": {
             "window_seconds": RING_SECONDS,
-            "kws_model": arguments.kws_model,
-            "threads": arguments.threads,
-            "keywords_score": arguments.keywords_score,
-            "keywords_threshold": arguments.keywords_threshold,
+            "kws_engine": arguments.kws_engine,
+            "kws_model": (
+                arguments.kws_model
+                if arguments.kws_engine == "sherpa"
+                else str(arguments.openwakeword_model)
+            ),
+            "threads": arguments.threads if arguments.kws_engine == "sherpa" else None,
+            "keywords_score": (
+                arguments.keywords_score if arguments.kws_engine == "sherpa" else None
+            ),
+            "keywords_threshold": (
+                arguments.keywords_threshold
+                if arguments.kws_engine == "sherpa"
+                else arguments.openwakeword_threshold
+            ),
             "intent_threshold": INTENT_THRESHOLD,
         },
         "platform": {
@@ -477,6 +581,44 @@ def self_test() -> None:
     append_ring(ring, b"b" * 640)
     assert len(ring) == RING_SECONDS * SAMPLE_RATE * 2
     assert ring[:1] == b"a" and ring[-1:] == b"b"
+
+    class FakeArray:
+        def __init__(self, value: float) -> None:
+            self.value = value
+
+        def reshape(self, *_shape: int) -> FakeArray:
+            return self
+
+        def __getitem__(self, _index: int) -> float:
+            return self.value
+
+    class FakeNumpy:
+        @staticmethod
+        def frombuffer(_chunk: bytes, dtype: str) -> object:
+            assert dtype == "<i2"
+            return object()
+
+        @staticmethod
+        def asarray(value: float) -> FakeArray:
+            return FakeArray(value)
+
+    class FakeOpenWakeWord:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def reset(self) -> None:
+            self.calls = 0
+
+        def predict(self, _samples: object) -> dict[str, float]:
+            self.calls += 1
+            return {"oreo": 0.7 if self.calls == 2 else 0.1}
+
+    fake_pcm = bytes(20 * OPENWAKEWORD_CHUNK_FRAMES * 2)
+    keyword, candidate, score = detect_openwakeword(
+        FakeOpenWakeWord(), FakeNumpy(), fake_pcm, 0.5
+    )
+    assert keyword == "oreo" and score == 0.7
+    assert len(candidate) == 15 * OPENWAKEWORD_CHUNK_FRAMES * 2
     print("wake benchmark self-test passed")
 
 
