@@ -146,7 +146,23 @@ def patch_audio_features(project: dict[str, Path]) -> None:
     utilities.AudioFeatures = CachedAudioFeatures
 
 
+def patch_pronunciation_dictionary() -> None:
+    import pronouncing
+
+    reviewed = {"orio": ["AO1 R IY0 OW0"]}
+    original = pronouncing.phones_for_word
+
+    def phones_for_word(word: str) -> list[str]:
+        normalized = word.casefold()
+        if normalized in reviewed:
+            return reviewed[normalized]
+        return original(word)
+
+    pronouncing.phones_for_word = phones_for_word
+
+
 def check_training_imports(project: dict[str, Path]) -> None:
+    patch_pronunciation_dictionary()
     piper_path = str(project["piper"])
     sys.path.insert(0, piper_path)
     try:
@@ -156,6 +172,10 @@ def check_training_imports(project: dict[str, Path]) -> None:
         if model is None or model.default is inspect.Parameter.empty:
             raise RuntimeError("Piper generator does not provide the reviewed default model")
         importlib.import_module("openwakeword.train")
+        training_data = importlib.import_module("openwakeword.data")
+        adversarial = training_data.generate_adversarial_texts("orio", N=8)
+        if len(adversarial) != 8:
+            raise RuntimeError("reviewed Orio pronunciation produced no hard negatives")
     finally:
         sys.path.remove(piper_path)
 
