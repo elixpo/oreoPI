@@ -14,7 +14,7 @@ oreo-agent = { path = "../../crates/oreo-agent" }
 oreo-audio = { path = "../../crates/oreo-audio" }
 oreo-core = { path = "../../crates/oreo-core" }
 oreo-local-api = { path = "../../crates/oreo-local-api" }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["net", "rt", "time"] }
 
 [lints]
 workspace = true

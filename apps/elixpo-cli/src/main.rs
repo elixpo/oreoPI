@@ -139,9 +139,7 @@ fn live_ask(request: String) -> Result<(), Box<dyn std::error::Error>> {
         &new_session_id()?,
         profile,
     )?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()?;
+    let runtime = agent_runtime()?;
     let mut output = StreamingOutput::default();
     let response =
         runtime.block_on(agent.ask(request, &AgentCancellation::default(), &mut output))?;
@@ -151,6 +149,13 @@ fn live_ask(request: String) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", response.text);
     }
     Ok(())
+}
+
+fn agent_runtime() -> io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
 }
 
 fn live_agent_settings() -> Result<(String, String), Box<dyn std::error::Error>> {
@@ -379,13 +384,8 @@ fn audio_command(
 fn voice_command(
     arguments: impl Iterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let arguments = arguments.collect::<Vec<_>>();
-    let offline = match arguments.as_slice() {
-        [] => false,
-        [flag] if flag == "--offline" => true,
-        _ => return Err("usage: elixpo voice [--offline]".into()),
-    };
-    if !offline {
+    let options = parse_voice_options(arguments)?;
+    if !options.offline {
         let _ = live_agent_settings()?;
     }
 
@@ -393,13 +393,55 @@ fn voice_command(
     let model_path = vosk_model_path();
     eprintln!("Loading the local speech model...");
     let mut transcriber = VoskTranscriber::load(model_path, limits)?;
-    wait_for_enter("Press Enter to start recording.")?;
+    let mut state = PushToTalkState::default();
+    state.press()?;
+    let started = Instant::now();
+    let cancellation = CancellationToken::new();
+    let transcript_result = match options.wav_path {
+        Some(wav_path) => {
+            eprintln!("Using recorded voice fixture: {}", wav_path.display());
+            let wav = WavSource::read(File::open(wav_path)?, limits)?;
+            let mut source = ConvertingSource::new(wav, STT_FORMAT, limits)?;
+            transcribe_source(&mut source, &mut transcriber, limits, &cancellation)
+                .map_err(Into::into)
+        }
+        None => transcribe_microphone(&mut transcriber, limits, &cancellation),
+    };
+    let transcript = match transcript_result {
+        Ok(transcript) => transcript,
+        Err(error) => {
+            state.fault();
+            return Err(error);
+        }
+    };
+    state.release()?;
+    state.transcript_ready()?;
+    println!("\nYou said: {transcript}");
+    println!("utterance_ms: {}", started.elapsed().as_millis());
 
+    let response = if options.offline {
+        offline_ask(&transcript)
+    } else {
+        live_ask(transcript)
+    };
+    if let Err(error) = response {
+        state.fault();
+        return Err(error);
+    }
+    state.text_response_complete()?;
+    Ok(())
+}
+
+#[cfg(feature = "vosk-stt")]
+fn transcribe_microphone(
+    transcriber: &mut VoskTranscriber,
+    limits: AudioLimits,
+    cancellation: &CancellationToken,
+) -> Result<String, Box<dyn std::error::Error>> {
+    wait_for_enter("Press Enter to start recording.")?;
     let input = CpalInputSource::open_default(limits)?;
     let capture_control = input.control();
     let mut source = ConvertingSource::new(input, STT_FORMAT, limits)?;
-    let mut state = PushToTalkState::default();
-    state.press()?;
 
     print!("Recording... press Enter to stop. ");
     io::stdout().flush()?;
@@ -411,42 +453,49 @@ fn voice_command(
         result
     });
 
-    let started = Instant::now();
-    let cancellation = CancellationToken::new();
-    let transcript_result = transcribe_source(&mut source, &mut transcriber, limits, &cancellation);
+    let transcript_result = transcribe_source(&mut source, transcriber, limits, cancellation);
     capture_control.stop();
-    let transcript = match transcript_result {
-        Ok(transcript) => transcript,
-        Err(error) => {
-            state.fault();
-            return Err(error.into());
-        }
-    };
+    let transcript = transcript_result?;
     stopper
         .join()
         .map_err(|_| "push-to-talk input thread failed")??;
-
     let capture_snapshot = source.into_inner().stats();
     if capture_snapshot.dropped_chunks != 0 || capture_snapshot.stream_errors != 0 {
-        state.fault();
         return Err("microphone capture lost audio; transcript was discarded".into());
     }
-    state.release()?;
-    state.transcript_ready()?;
-    println!("\nYou said: {transcript}");
-    println!("utterance_ms: {}", started.elapsed().as_millis());
+    Ok(transcript)
+}
 
-    let response = if offline {
-        offline_ask(&transcript)
-    } else {
-        live_ask(transcript)
-    };
-    if let Err(error) = response {
-        state.fault();
-        return Err(error);
+#[derive(Debug, Eq, PartialEq)]
+struct VoiceOptions {
+    offline: bool,
+    wav_path: Option<PathBuf>,
+}
+
+fn parse_voice_options(
+    arguments: impl Iterator<Item = String>,
+) -> Result<VoiceOptions, &'static str> {
+    let mut offline = false;
+    let mut wav_path = None;
+    let mut arguments = arguments.peekable();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--offline" if !offline => offline = true,
+            "--wav" if wav_path.is_none() => {
+                let path = arguments.next().ok_or(voice_usage())?;
+                if path.is_empty() {
+                    return Err(voice_usage());
+                }
+                wav_path = Some(PathBuf::from(path));
+            }
+            _ => return Err(voice_usage()),
+        }
     }
-    state.text_response_complete()?;
-    Ok(())
+    Ok(VoiceOptions { offline, wav_path })
+}
+
+const fn voice_usage() -> &'static str {
+    "usage: elixpo voice [--offline] [--wav <pcm-wav>]"
 }
 
 #[cfg(not(feature = "vosk-stt"))]
@@ -647,6 +696,53 @@ impl EventSink for StreamingOutput {
             print!("{delta}");
             let _ = io::stdout().flush();
             self.wrote_text = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{VoiceOptions, agent_runtime, parse_voice_options};
+
+    #[test]
+    fn agent_runtime_supports_network_io() {
+        let runtime = agent_runtime().expect("runtime builds");
+        let listener = runtime
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .expect("runtime has an I/O driver");
+        drop(listener);
+    }
+
+    #[test]
+    fn voice_options_accept_a_repeatable_recording() {
+        let options = parse_voice_options(
+            ["--wav", "fixture.wav", "--offline"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("options parse");
+        assert_eq!(
+            options,
+            VoiceOptions {
+                offline: true,
+                wav_path: Some(PathBuf::from("fixture.wav")),
+            }
+        );
+    }
+
+    #[test]
+    fn voice_options_reject_duplicates_and_missing_paths() {
+        for arguments in [
+            vec!["--offline", "--offline"],
+            vec!["--wav"],
+            vec!["--wav", "one.wav", "--wav", "two.wav"],
+        ] {
+            assert!(
+                parse_voice_options(arguments.into_iter().map(str::to_owned)).is_err(),
+                "invalid options must fail"
+            );
         }
     }
 }

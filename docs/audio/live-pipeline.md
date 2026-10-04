@@ -36,3 +36,30 @@ Press Enter once to begin capture, speak one command, then press Enter again to
 release. The command prints the recognized text and response; it does not
 persist either. Wake-word activation and TTS/emotional delivery are separate
 pipeline stages.
+
+## Repeatable base recording
+
+Use one ignored 16 kHz mono PCM WAV while tuning recognition or comparing agent
+models. This prevents a new microphone take from changing the input between
+runs:
+
+```bash
+arecord -q -f S16_LE -r 16000 -c 1 tests/audio/fixtures/base-voice.wav
+```
+
+Stop `arecord` with Ctrl-C, then load `.env.local` and send the same recording
+through the complete transcription and agent path:
+
+```bash
+set -a
+source .env.local
+set +a
+rtk env OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  cargo run -p elixpo-cli --features vosk-stt -- \
+  voice --wav tests/audio/fixtures/base-voice.wav
+```
+
+The repository ignores every WAV file. Keep the expected sentence separately
+in the local benchmark manifest when measuring word error rate; do not tune a
+free-conversation recognizer with a restrictive command grammar.
