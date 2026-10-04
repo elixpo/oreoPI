@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "oreo",
+      "wav": "fixtures/wake-oreo.wav",
+      "transcript": "Oreo",
+      "expected_wake": true
+    },
+    {
+      "id": "wake-up-oreo",
+      "wav": "fixtures/wake-up-oreo.wav",
+      "transcript": "wake up Oreo",
+      "expected_wake": true
+    },
+    {
+      "id": "oreo-you-there",
+      "wav": "fixtures/oreo-you-there.wav",
+      "transcript": "Oreo you there",
+      "expected_wake": true
+    },
+    {
+      "id": "question-oreo",
+      "wav": "fixtures/question-oreo.wav",
+      "transcript": "can you hear me Oreo",
+      "expected_wake": true
+    },
+    {
+      "id": "oreo-cookies",
+      "wav": "fixtures/oreo-cookies.wav",
+      "transcript": "Oreo cookies are discounted today",
+      "expected_wake": false
+    },
+    {
+      "id": "buy-oreos",
+      "wav": "fixtures/buy-oreos.wav",
+      "transcript": "please buy a packet of Oreos",
+      "expected_wake": false
+    },
+    {
+      "id": "stereo",
+      "wav": "fixtures/stereo.wav",
+      "transcript": "turn down the stereo please",
+      "expected_wake": false
+    },
+    {
+      "id": "weather-conversation",
+      "wav": "fixtures/weather-conversation.wav",
+      "transcript": "the weather looks pleasant today",
+      "expected_wake": false
+    }
+  ]
+}

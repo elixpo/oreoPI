@@ -6,6 +6,7 @@ __pycache__/
 *.log
 *.wav
 /tests/audio/fixtures.local.json
+/tests/audio/wake-fixtures.local.json
 .env.local
 !.env.example
 /models/cache/*

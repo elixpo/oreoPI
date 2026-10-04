@@ -1,0 +1,53 @@
+# split	label	transcript
+train	wake	oreo
+train	wake	orio
+train	wake	hello oreo
+train	wake	hey oreo
+train	wake	hi oreo
+train	wake	okay oreo
+train	wake	wake up oreo
+train	wake	oreo wake up
+train	wake	oreo you there
+train	wake	oreo are you there
+train	wake	are you awake oreo
+train	wake	can you hear me oreo
+train	wake	oreo can you listen
+train	wake	listen to me oreo
+train	wake	oreo please respond
+train	wake	oreo help me
+train	wake	oreo set a timer
+train	wake	oreo tell me the weather
+train	wake	yo oreo
+train	wake	could you help me oreo
+train	ignore	i bought oreo cookies
+train	ignore	oreo is a cookie brand
+train	ignore	do you want some oreos
+train	ignore	the oreo cake tastes good
+train	ignore	add oreos to the shopping list
+train	ignore	we ran out of oreo biscuits
+train	ignore	this recipe uses crushed oreos
+train	ignore	oreo ice cream is on sale
+train	ignore	i watched a video about oreo
+train	ignore	the oreo packet is open
+train	ignore	share those oreos with everyone
+train	ignore	which oreo flavor do you prefer
+train	ignore	my dog is named oreo
+train	ignore	the stereo is too loud
+train	ignore	an oriole landed outside
+train	ignore	the store sells oreo cereal
+train	ignore	she mentioned oreo in the article
+train	ignore	put the oreo box away
+train	ignore	we should buy more oreos tomorrow
+train	ignore	this dessert contains oreo crumbs
+test	wake	oreo could you listen to me
+test	wake	wake up orio
+test	wake	are you listening oreo
+test	wake	oreo what time is it
+test	wake	please answer me oreo
+test	wake	hello are you there oreo
+test	ignore	please buy a packet of oreos
+test	ignore	oreo cookies are discounted today
+test	ignore	the article compares oreo flavors
+test	ignore	i named the puppy oreo
+test	ignore	turn down the stereo please
+test	ignore	we used oreos in the cheesecake

@@ -88,3 +88,24 @@ sample_rate_hz = 24000
 speakers = 8
 quantization = "int8"
 licence = "Apache-2.0"
+
+[[models]]
+id = "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
+engine = "sherpa-onnx"
+engine_version = "1.13.8"
+language = "en+zh"
+role = "wake-candidate"
+source = "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2"
+archive_bytes = 32885699
+installed_directory = "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
+upstream_sha256 = "68447f4fbc67e70eee3a93961f36e81e98f47aef73ce7e7ca00885c6cd3616a6"
+retained_files = [
+  "encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
+  "decoder-epoch-13-avg-2-chunk-8-left-64.onnx",
+  "joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
+  "tokens.txt",
+  "en.phone",
+]
+streaming_chunk_ms = 160
+quantization = "int8 encoder and joiner"
+licence = "Apache-2.0"

@@ -14,6 +14,7 @@ mod stream;
 mod vad;
 #[cfg(feature = "vosk-stt")]
 mod vosk_stt;
+mod wake;
 mod wav;
 
 use std::error::Error;
@@ -35,6 +36,7 @@ pub use stream::{SpeechChunker, transcribe_source};
 pub use vad::{EnergyVad, VadConfig, VadDecision};
 #[cfg(feature = "vosk-stt")]
 pub use vosk_stt::{VoskConfidence, VoskTranscriber};
+pub use wake::{WakeAudioWindow, WakeIntentClassifier, WakeIntentDecision};
 pub use wav::WavSource;
 
 pub const MAX_CHANNELS: u16 = 2;
