@@ -32,6 +32,27 @@ acquired_sha256 = "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942
 licence = "Apache-2.0"
 
 [[models]]
+id = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+engine = "sherpa-onnx"
+engine_version = "1.13.8"
+language = "en"
+role = "wake-candidate-primary"
+source = "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
+archive_bytes = 17626723
+installed_directory = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+upstream_sha256 = "f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a"
+retained_files = [
+  "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+  "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+  "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+  "tokens.txt",
+  "bpe.model",
+]
+streaming_chunk_ms = 320
+quantization = "int8 encoder, decoder, and joiner"
+licence = "Apache-2.0"
+
+[[models]]
 id = "pocket-tts-english-2026-09"
 engine = "pocket-tts"
 engine_version = "3.3.0"

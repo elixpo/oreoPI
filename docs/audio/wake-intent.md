@@ -6,10 +6,11 @@ Date: 2026-10-04
 
 The laptop candidate uses a four-stage local cascade:
 
-1. sherpa-onnx's 3M open-vocabulary KWS model listens only for the configurable
-   assistant identity, `Oreo`. It does not contain a list of greeting or command
-   phrases. Its token file can be regenerated without retraining the acoustic
-   model.
+1. sherpa-onnx's English-only 3.3M open-vocabulary KWS candidate listens only
+   for the configurable assistant identity, `Oreo`. It uses BPE subwords and
+   does not contain a list of greeting or command phrases. Its token file can
+   be regenerated without retraining the acoustic model. The earlier bilingual
+   phone candidate remains available only for reproducible comparison.
 2. `WakeAudioWindow` retains only the most recent one to three seconds of
    16 kHz mono PCM. It drops old samples, rejects format changes, and clears on
    cancellation. It does not persist background audio.
@@ -47,7 +48,7 @@ published size and SHA-256, retains only the chunk-8 int8 files, and generates
 the Oreo keyword tokens with the pinned sherpa CLI:
 
 ```bash
-rtk ./scripts/fetch-wake-model.sh
+rtk ./scripts/fetch-wake-model.sh english
 ```
 
 Create the ignored local manifest and record all eight phrases. Each source WAV
@@ -72,6 +73,7 @@ Run the dependency-free classifier check, then the complete local cascade:
 ```bash
 rtk .venv/bin/python scripts/benchmark-wake.py self-test
 rtk .venv/bin/python scripts/benchmark-wake.py run \
+  --kws-model english \
   --manifest tests/audio/wake-fixtures.local.json \
   --output target/audio-bench/wake.json
 ```
@@ -87,3 +89,8 @@ music, and television fixtures and run an eight-hour idle soak. The native
 daemon adapter, barge-in/follow-up state machine, and AArch64 measurements are
 the next implementation steps; this pass selects the trigger behavior and its
 resource envelope first.
+
+The bilingual phone candidate can be reproduced with
+`./scripts/fetch-wake-model.sh bilingual` and `--kws-model bilingual`. Do not
+compare reports unless their fixture hashes, KWS settings, and keyword-file
+hashes match.

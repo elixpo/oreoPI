@@ -118,6 +118,9 @@ def parse_arguments() -> argparse.Namespace:
     )
     run.add_argument("--repetitions", type=int, default=3)
     run.add_argument("--threads", type=int, default=1)
+    run.add_argument(
+        "--kws-model", choices=("english", "bilingual"), default="english"
+    )
     run.add_argument("--keywords-score", type=float, default=1.5)
     run.add_argument("--keywords-threshold", type=float, default=0.20)
     run.add_argument("--output", type=Path)
@@ -277,15 +280,30 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         )
 
     root = arguments.repo_root
-    kws_id = "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
+    kws_specs = {
+        "english": {
+            "id": "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+            "encoder": "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+            "decoder": "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+            "joiner": "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+        },
+        "bilingual": {
+            "id": "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
+            "encoder": "encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
+            "decoder": "decoder-epoch-13-avg-2-chunk-8-left-64.onnx",
+            "joiner": "joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
+        },
+    }
+    kws_spec = kws_specs[arguments.kws_model]
+    kws_id = str(kws_spec["id"])
     kws_dir = root / "models/cache" / kws_id
     vosk_id = "vosk-model-small-en-us-0.15"
     vosk_dir = root / "models/cache" / vosk_id
     files = {
         "tokens": kws_dir / "tokens.txt",
-        "encoder": kws_dir / "encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
-        "decoder": kws_dir / "decoder-epoch-13-avg-2-chunk-8-left-64.onnx",
-        "joiner": kws_dir / "joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
+        "encoder": kws_dir / str(kws_spec["encoder"]),
+        "decoder": kws_dir / str(kws_spec["decoder"]),
+        "joiner": kws_dir / str(kws_spec["joiner"]),
         "keywords_file": kws_dir / "oreo-keywords.txt",
     }
     if any(not path.is_file() for path in files.values()) or not vosk_dir.is_dir():
@@ -405,6 +423,7 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         },
         "settings": {
             "window_seconds": RING_SECONDS,
+            "kws_model": arguments.kws_model,
             "threads": arguments.threads,
             "keywords_score": arguments.keywords_score,
             "keywords_threshold": arguments.keywords_threshold,
