@@ -389,6 +389,7 @@ dependencies = [
  "oreo-audio",
  "oreo-core",
  "oreo-local-api",
+ "serde_json",
  "tokio",
 ]
 

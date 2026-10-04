@@ -7,8 +7,10 @@
 
 use std::error::Error;
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crumb_agent::{
     AgentMode, AgentSession, ApprovalBroker, CancellationToken, SessionId, SessionJournal,
@@ -52,6 +54,25 @@ impl AgentProfile {
             trusted_context: Vec::new(),
             max_output_tokens: Some(512),
             limits: HarnessLimits::default(),
+            mode: AgentMode::Negotiate,
+        }
+    }
+
+    /// Creates the tighter profile used by short spoken interactions.
+    #[must_use]
+    pub fn voice(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            persona: String::new(),
+            trusted_context: Vec::new(),
+            max_output_tokens: Some(256),
+            limits: HarnessLimits {
+                max_model_rounds: NonZeroUsize::new(4).unwrap_or(NonZeroUsize::MIN),
+                max_tool_calls: NonZeroUsize::new(4).unwrap_or(NonZeroUsize::MIN),
+                max_output_bytes: NonZeroUsize::new(8 * 1_024).unwrap_or(NonZeroUsize::MIN),
+                max_history_turns: NonZeroUsize::new(4).unwrap_or(NonZeroUsize::MIN),
+                turn_timeout: Duration::from_secs(45),
+            },
             mode: AgentMode::Negotiate,
         }
     }
@@ -355,6 +376,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::future;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use crumb_agent::{CancellationToken, DenyAllApprovals, ToolHost};
     use crumb_llm::{
@@ -472,5 +494,16 @@ mod tests {
         let profile = AgentProfile::sbc(" ");
         let error = profile.validate().expect_err("blank model is invalid");
         assert_eq!(error.to_string(), "agent model must not be empty");
+    }
+
+    #[test]
+    fn voice_profile_bounds_spoken_turn_cost() {
+        let profile = AgentProfile::voice("fixture");
+        assert_eq!(profile.max_output_tokens, Some(256));
+        assert_eq!(profile.limits.max_model_rounds.get(), 4);
+        assert_eq!(profile.limits.max_tool_calls.get(), 4);
+        assert_eq!(profile.limits.max_output_bytes.get(), 8 * 1_024);
+        assert_eq!(profile.limits.max_history_turns.get(), 4);
+        assert_eq!(profile.limits.turn_timeout, Duration::from_secs(45));
     }
 }

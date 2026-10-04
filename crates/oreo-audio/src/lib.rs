@@ -30,7 +30,7 @@ pub use pronunciation::normalize_for_speech;
 pub use stream::{SpeechChunker, transcribe_source};
 pub use vad::{EnergyVad, VadConfig, VadDecision};
 #[cfg(feature = "vosk-stt")]
-pub use vosk_stt::VoskTranscriber;
+pub use vosk_stt::{VoskConfidence, VoskTranscriber};
 pub use wav::WavSource;
 
 pub const MAX_CHANNELS: u16 = 2;

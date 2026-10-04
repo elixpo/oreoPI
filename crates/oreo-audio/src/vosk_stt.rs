@@ -19,7 +19,55 @@ pub struct VoskTranscriber {
     recognizer: Option<Recognizer>,
     model: Model,
     transcript: String,
+    confidence: ConfidenceAccumulator,
     max_transcript_bytes: usize,
+}
+
+/// Aggregate word confidence from one completed Vosk utterance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoskConfidence {
+    pub mean: f32,
+    pub minimum: f32,
+    pub words: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ConfidenceAccumulator {
+    sum: f32,
+    count: f32,
+    words: u32,
+    minimum: Option<f32>,
+}
+
+impl ConfidenceAccumulator {
+    fn record(&mut self, confidence: f32) {
+        self.sum += confidence;
+        self.count += 1.0;
+        self.words = self.words.saturating_add(1);
+        self.minimum = Some(self.minimum.map_or(confidence, |value| value.min(confidence)));
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.sum += other.sum;
+        self.count += other.count;
+        self.words = self.words.saturating_add(other.words);
+        if let Some(minimum) = other.minimum {
+            self.minimum = Some(self.minimum.map_or(minimum, |value| value.min(minimum)));
+        }
+    }
+
+    fn complete(self) -> Option<VoskConfidence> {
+        Some(VoskConfidence {
+            mean: self.sum / self.count,
+            minimum: self.minimum?,
+            words: self.words,
+        })
+    }
+}
+
+struct DecodedSegment {
+    text: String,
+    confidence: ConfidenceAccumulator,
 }
 
 impl fmt::Debug for VoskTranscriber {
@@ -28,6 +76,7 @@ impl fmt::Debug for VoskTranscriber {
             .debug_struct("VoskTranscriber")
             .field("active", &self.recognizer.is_some())
             .field("transcript_bytes", &self.transcript.len())
+            .field("confidence_words", &self.confidence.words)
             .field("max_transcript_bytes", &self.max_transcript_bytes)
             .finish_non_exhaustive()
     }
@@ -53,6 +102,7 @@ impl VoskTranscriber {
             recognizer: None,
             model,
             transcript: String::with_capacity(limits.max_transcript_bytes),
+            confidence: ConfidenceAccumulator::default(),
             max_transcript_bytes: limits.max_transcript_bytes,
         })
     }
@@ -62,13 +112,30 @@ impl VoskTranscriber {
         self.recognizer.is_some()
     }
 
+    /// Returns aggregate confidence after a successful completed utterance.
+    #[must_use]
+    pub fn confidence(&self) -> Option<VoskConfidence> {
+        if self.recognizer.is_some() {
+            None
+        } else {
+            self.confidence.complete()
+        }
+    }
+
     fn reset_utterance(&mut self) {
         self.recognizer = None;
         self.transcript.clear();
+        self.confidence = ConfidenceAccumulator::default();
     }
 
-    fn append_segment(&mut self, segment: &str) -> Result<(), AudioError> {
-        append_bounded(&mut self.transcript, segment, self.max_transcript_bytes)
+    fn append_segment(&mut self, segment: DecodedSegment) -> Result<(), AudioError> {
+        append_bounded(
+            &mut self.transcript,
+            &segment.text,
+            self.max_transcript_bytes,
+        )?;
+        self.confidence.merge(segment.confidence);
+        Ok(())
     }
 }
 
@@ -87,13 +154,15 @@ impl StreamingTranscriber for VoskTranscriber {
             ));
         }
         self.transcript.clear();
-        self.recognizer = Recognizer::new(&self.model, 16_000.0_f32);
-        if self.recognizer.is_none() {
-            return Err(AudioError::new(
+        self.confidence = ConfidenceAccumulator::default();
+        let mut recognizer = Recognizer::new(&self.model, 16_000.0_f32).ok_or_else(|| {
+            AudioError::new(
                 AudioErrorKind::Backend,
                 "Vosk recognizer could not be created",
-            ));
-        }
+            )
+        })?;
+        recognizer.set_words(true);
+        self.recognizer = Some(recognizer);
         Ok(())
     }
 
@@ -114,7 +183,7 @@ impl StreamingTranscriber for VoskTranscriber {
             ));
         }
 
-        let segment = (|| -> Result<Option<String>, AudioError> {
+        let segment = (|| -> Result<Option<DecodedSegment>, AudioError> {
             let recognizer = self.recognizer.as_mut().ok_or_else(|| {
                 AudioError::new(
                     AudioErrorKind::InvalidTransition,
@@ -125,7 +194,7 @@ impl StreamingTranscriber for VoskTranscriber {
                 AudioError::new(AudioErrorKind::Backend, "Vosk transcription failed")
             })? {
                 DecodingState::Running => Ok(None),
-                DecodingState::Finalized => Ok(Some(single_text(recognizer.result())?)),
+                DecodingState::Finalized => Ok(Some(decode_segment(recognizer.result())?)),
                 DecodingState::Failed => Err(AudioError::new(
                     AudioErrorKind::Backend,
                     "Vosk transcription failed",
@@ -145,7 +214,7 @@ impl StreamingTranscriber for VoskTranscriber {
             return Err(cancelled());
         }
         if let Some(segment) = segment
-            && let Err(error) = self.append_segment(&segment)
+            && let Err(error) = self.append_segment(segment)
         {
             self.reset_utterance();
             return Err(error);
@@ -168,31 +237,38 @@ impl StreamingTranscriber for VoskTranscriber {
                 "Vosk transcription is not active",
             )
         })?;
-        let final_segment = match single_text(recognizer.final_result()) {
+        let final_segment = match decode_segment(recognizer.final_result()) {
             Ok(segment) => segment,
             Err(error) => {
-                self.transcript.clear();
+                self.reset_utterance();
                 return Err(error);
             }
         };
         drop(recognizer);
         if cancellation.is_cancelled() {
-            self.transcript.clear();
+            self.reset_utterance();
             return Err(cancelled());
         }
-        if let Err(error) = self.append_segment(&final_segment) {
-            self.transcript.clear();
+        if let Err(error) = self.append_segment(final_segment) {
+            self.reset_utterance();
             return Err(error);
         }
         Ok(std::mem::take(&mut self.transcript))
     }
 }
 
-fn single_text(result: CompleteResult<'_>) -> Result<String, AudioError> {
-    result
+fn decode_segment(result: CompleteResult<'_>) -> Result<DecodedSegment, AudioError> {
+    let result = result
         .single()
-        .map(|result| result.text.trim().to_owned())
-        .ok_or_else(|| AudioError::new(AudioErrorKind::Backend, "Vosk returned an invalid result"))
+        .ok_or_else(|| AudioError::new(AudioErrorKind::Backend, "Vosk returned an invalid result"))?;
+    let mut confidence = ConfidenceAccumulator::default();
+    for word in result.result {
+        confidence.record(word.conf);
+    }
+    Ok(DecodedSegment {
+        text: result.text.trim().to_owned(),
+        confidence,
+    })
 }
 
 fn append_bounded(
@@ -232,7 +308,7 @@ fn cancelled() -> AudioError {
 
 #[cfg(test)]
 mod tests {
-    use super::append_bounded;
+    use super::{ConfidenceAccumulator, append_bounded};
     use crate::AudioErrorKind;
 
     #[test]
@@ -250,5 +326,16 @@ mod tests {
         let error = append_bounded(&mut transcript, "oversized", 8).expect_err("must fail");
         assert_eq!(error.kind, AudioErrorKind::Capacity);
         assert_eq!(transcript, "keep");
+    }
+
+    #[test]
+    fn confidence_accumulator_tracks_mean_minimum_and_count() {
+        let mut confidence = ConfidenceAccumulator::default();
+        confidence.record(0.9);
+        confidence.record(0.7);
+        let complete = confidence.complete().expect("confidence exists");
+        assert!((complete.mean - 0.8).abs() < f32::EPSILON);
+        assert!((complete.minimum - 0.7).abs() < f32::EPSILON);
+        assert_eq!(complete.words, 2);
     }
 }

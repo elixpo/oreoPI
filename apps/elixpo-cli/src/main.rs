@@ -68,19 +68,14 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
             Ok(())
         }
         Some("ask") => {
-            let mut words = arguments.collect::<Vec<_>>();
-            let offline = words.first().is_some_and(|word| word == "--offline");
-            if offline {
-                words.remove(0);
-            }
-            let request = words.join(" ");
-            if request.trim().is_empty() {
-                return Err("usage: elixpo ask [--offline] <request>".into());
-            }
-            if offline {
-                offline_ask(&request)
+            let options = parse_ask_options(arguments)?;
+            if options.offline {
+                if options.metrics {
+                    return Err("agent metrics require the live model path".into());
+                }
+                offline_ask(&options.request)
             } else {
-                live_ask(request)
+                live_ask(options.request, AgentSurface::Text, options.metrics)
             }
         }
         Some("tools") => {
@@ -123,12 +118,27 @@ fn offline_ask(request: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn live_ask(request: String) -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Clone, Copy)]
+enum AgentSurface {
+    Text,
+    #[cfg(feature = "vosk-stt")]
+    Voice,
+}
+
+fn live_ask(
+    request: String,
+    surface: AgentSurface,
+    show_metrics: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (api_key, model) = live_agent_settings()?;
     let provider = Arc::new(PollinationsProvider::new(PollinationsConfig::new(
         api_key,
     )?)?);
-    let mut profile = AgentProfile::sbc(model);
+    let mut profile = match surface {
+        AgentSurface::Text => AgentProfile::sbc(model.clone()),
+        #[cfg(feature = "vosk-stt")]
+        AgentSurface::Voice => AgentProfile::voice(model.clone()),
+    };
     OREO_PERSONA.clone_into(&mut profile.persona);
     let (tools, approvals) = capability_registry(true)?.finish();
     let mut agent = OreoAgent::new(
@@ -140,15 +150,81 @@ fn live_ask(request: String) -> Result<(), Box<dyn std::error::Error>> {
         profile,
     )?;
     let runtime = agent_runtime()?;
-    let mut output = StreamingOutput::default();
+    let started = Instant::now();
+    let mut output = StreamingOutput::new(started);
     let response =
         runtime.block_on(agent.ask(request, &AgentCancellation::default(), &mut output))?;
+    let total_ms = elapsed_millis(started);
     if output.wrote_text {
         println!();
     } else {
         println!("{}", response.text);
     }
+    if show_metrics {
+        eprintln!(
+            "agent_metrics={}",
+            serde_json::json!({
+                "schema_version": 1,
+                "model": model,
+                "surface": match surface {
+                    AgentSurface::Text => "text",
+                    #[cfg(feature = "vosk-stt")]
+                    AgentSurface::Voice => "voice",
+                },
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "model_rounds": response.model_rounds,
+                "tool_calls": response.tool_calls,
+                "first_text_ms": output.first_text_ms,
+                "total_ms": total_ms,
+                "response_bytes": response.text.len(),
+            })
+        );
+    }
     Ok(())
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct AskOptions {
+    offline: bool,
+    metrics: bool,
+    request: String,
+}
+
+fn parse_ask_options(arguments: impl Iterator<Item = String>) -> Result<AskOptions, &'static str> {
+    let mut offline = false;
+    let mut metrics = false;
+    let mut words = Vec::new();
+    for argument in arguments {
+        match argument.as_str() {
+            "--offline" if words.is_empty() => {
+                if offline {
+                    return Err("usage: elixpo ask [--offline] [--metrics] <request>");
+                }
+                offline = true;
+            }
+            "--metrics" if words.is_empty() => {
+                if metrics {
+                    return Err("usage: elixpo ask [--offline] [--metrics] <request>");
+                }
+                metrics = true;
+            }
+            _ => words.push(argument),
+        }
+    }
+    let request = words.join(" ");
+    if request.trim().is_empty() {
+        return Err("usage: elixpo ask [--offline] [--metrics] <request>");
+    }
+    Ok(AskOptions {
+        offline,
+        metrics,
+        request,
+    })
 }
 
 fn agent_runtime() -> io::Result<tokio::runtime::Runtime> {
@@ -385,6 +461,9 @@ fn voice_command(
     arguments: impl Iterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let options = parse_voice_options(arguments)?;
+    if options.offline && options.metrics {
+        return Err("agent metrics require the live model path".into());
+    }
     if !options.offline {
         let _ = live_agent_settings()?;
     }
@@ -422,7 +501,7 @@ fn voice_command(
     let response = if options.offline {
         offline_ask(&transcript)
     } else {
-        live_ask(transcript)
+        live_ask(transcript, AgentSurface::Voice, options.metrics)
     };
     if let Err(error) = response {
         state.fault();
@@ -466,21 +545,26 @@ fn transcribe_microphone(
     Ok(transcript)
 }
 
+#[cfg(any(feature = "vosk-stt", test))]
 #[derive(Debug, Eq, PartialEq)]
 struct VoiceOptions {
     offline: bool,
+    metrics: bool,
     wav_path: Option<PathBuf>,
 }
 
+#[cfg(any(feature = "vosk-stt", test))]
 fn parse_voice_options(
     arguments: impl Iterator<Item = String>,
 ) -> Result<VoiceOptions, &'static str> {
     let mut offline = false;
+    let mut metrics = false;
     let mut wav_path = None;
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--offline" if !offline => offline = true,
+            "--metrics" if !metrics => metrics = true,
             "--wav" if wav_path.is_none() => {
                 let path = arguments.next().ok_or(voice_usage())?;
                 if path.is_empty() {
@@ -491,11 +575,16 @@ fn parse_voice_options(
             _ => return Err(voice_usage()),
         }
     }
-    Ok(VoiceOptions { offline, wav_path })
+    Ok(VoiceOptions {
+        offline,
+        metrics,
+        wav_path,
+    })
 }
 
+#[cfg(any(feature = "vosk-stt", test))]
 const fn voice_usage() -> &'static str {
-    "usage: elixpo voice [--offline] [--wav <pcm-wav>]"
+    "usage: elixpo voice [--offline] [--metrics] [--wav <pcm-wav>]"
 }
 
 #[cfg(not(feature = "vosk-stt"))]
@@ -685,14 +774,28 @@ fn new_session_id() -> Result<String, Box<dyn std::error::Error>> {
     Ok(format!("oreo-{millis}-{}", std::process::id()))
 }
 
-#[derive(Default)]
 struct StreamingOutput {
     wrote_text: bool,
+    started: Instant,
+    first_text_ms: Option<u64>,
+}
+
+impl StreamingOutput {
+    const fn new(started: Instant) -> Self {
+        Self {
+            wrote_text: false,
+            started,
+            first_text_ms: None,
+        }
+    }
 }
 
 impl EventSink for StreamingOutput {
     fn emit(&mut self, event: AgentEvent) {
         if let AgentEvent::TextDelta(delta) = event {
+            if !delta.is_empty() && self.first_text_ms.is_none() {
+                self.first_text_ms = Some(elapsed_millis(self.started));
+            }
             print!("{delta}");
             let _ = io::stdout().flush();
             self.wrote_text = true;
@@ -704,7 +807,7 @@ impl EventSink for StreamingOutput {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{VoiceOptions, agent_runtime, parse_voice_options};
+    use super::{AskOptions, VoiceOptions, agent_runtime, parse_ask_options, parse_voice_options};
 
     #[test]
     fn agent_runtime_supports_network_io() {
@@ -727,6 +830,7 @@ mod tests {
             options,
             VoiceOptions {
                 offline: true,
+                metrics: false,
                 wav_path: Some(PathBuf::from("fixture.wav")),
             }
         );
@@ -736,6 +840,7 @@ mod tests {
     fn voice_options_reject_duplicates_and_missing_paths() {
         for arguments in [
             vec!["--offline", "--offline"],
+            vec!["--metrics", "--metrics"],
             vec!["--wav"],
             vec!["--wav", "one.wav", "--wav", "two.wav"],
         ] {
@@ -744,5 +849,23 @@ mod tests {
                 "invalid options must fail"
             );
         }
+    }
+
+    #[test]
+    fn ask_options_keep_flags_out_of_the_request() {
+        let options = parse_ask_options(
+            ["--metrics", "what", "is", "the", "device", "status"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("options parse");
+        assert_eq!(
+            options,
+            AskOptions {
+                offline: false,
+                metrics: true,
+                request: "what is the device status".to_owned(),
+            }
+        );
     }
 }
