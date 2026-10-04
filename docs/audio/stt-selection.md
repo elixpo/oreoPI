@@ -4,8 +4,8 @@ Date: 2026-10-03
 
 ## Decision
 
-Use Vosk 0.3.45 with `vosk-model-small-en-us-0.15` as Oreo's provisional
-offline STT primary on the reference laptop. Keep sherpa-onnx 1.13.8 with the
+Use Vosk 0.3.45 with `vosk-model-small-en-us-0.15` as Oreo's selected offline
+STT primary on the reference laptop. Keep sherpa-onnx 1.13.8 with the
 English 20M streaming Zipformer INT8 files as the resource fallback and future
 optimization candidate.
 
@@ -34,11 +34,16 @@ reference once. Sherpa was stable but omitted “set a timer,” changed “devi
 status” substantially, and rendered Kolkata as “Golcotta.”
 
 The production Rust adapter, cancellation cleanup, fixed-WAV agent handoff, and
-live laptop microphone-to-agent path now pass. The fixed free-conversation WAV
+live laptop microphone-to-agent path pass. The fixed free-conversation WAV
 completed cached transcription and agent handoff with 768 ms reported
-utterance processing on the reference laptop. The selection remains
-provisional for the production image until the 30-minute soak, larger
-quiet/noisy corpus, and AArch64 gates are recorded.
+utterance processing on the reference laptop. The release-mode 30-minute soak
+completed 2,515 turns with zero hypothesis mismatches, 758 ms p95, and zero end
+RSS growth after warm-up. Mean word confidence was 0.9838 and the minimum was
+0.7079 across 18 words.
+
+This finalizes the laptop STT selection. A larger quiet/noisy corpus and the
+AArch64 benchmark remain production-image gates rather than blockers for the
+next laptop pipeline layer.
 
 Wake-word recognition is intentionally not part of the Vosk adapter. The first
 implementation remains push-to-talk and exposes Vosk only through Oreo's

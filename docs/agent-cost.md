@@ -44,3 +44,11 @@ Oreo's tool-selection, refusal, ambiguity, and concision fixtures.
 Model fallback is allowed only before a side-effecting tool executes. Replaying
 an entire failed turn after a device action could duplicate the action, so
 cross-model fallback is not enabled by this benchmark.
+
+## Laptop selection
+
+GPT-5.4 Nano passed 15/15 corrected fixtures at 0.0000686025 mean Pollen and
+5,709 ms p95. Qwen 3.7 Flash also passed 15/15 but cost 0.000186458 mean Pollen
+and reached 46,971 ms p95 because some simple turns billed thousands of output
+or reasoning tokens. Nemotron passed only 9/15. GPT-5.4 Nano is therefore the
+pinned default; see ADR 0008.

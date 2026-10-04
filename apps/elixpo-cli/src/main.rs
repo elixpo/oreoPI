@@ -25,6 +25,7 @@ use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig,
 use oreo_local_api::{PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request};
 
 const OREO_PERSONA: &str = include_str!("../../../config/persona.md");
+const DEFAULT_AGENT_MODEL: &str = "openai/gpt-5.4-nano";
 
 fn main() -> ExitCode {
     match run(env::args().skip(1)) {
@@ -54,12 +55,10 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), Box<dyn std::e
                 }) => format!("ready (schema: {schema_version}, timers: {active_timers})"),
                 _ => "offline".to_owned(),
             };
-            let agent = if env::var_os("POLLINATIONS_API_KEY").is_some()
-                && env::var_os("OREO_MODEL").is_some()
-            {
-                "configured"
+            let agent = if env::var_os("POLLINATIONS_API_KEY").is_some() {
+                DEFAULT_AGENT_MODEL
             } else {
-                "offline (set POLLINATIONS_API_KEY and OREO_MODEL)"
+                "offline (set POLLINATIONS_API_KEY)"
             };
             println!(
                 "Oreo runtime: ready (profile: {}, queue: {}, daemon: {}, agent: {})",
@@ -238,7 +237,9 @@ fn live_agent_settings() -> Result<(String, String), Box<dyn std::error::Error>>
     let api_key = env::var("POLLINATIONS_API_KEY")
         .map_err(|_| "POLLINATIONS_API_KEY is required; use --offline for the local path")?;
     let model = env::var("OREO_MODEL")
-        .map_err(|_| "OREO_MODEL is required; use --offline for the local path")?;
+        .ok()
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_AGENT_MODEL.to_owned());
     Ok((api_key, model))
 }
 

@@ -23,12 +23,13 @@ rtk env OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   cargo run -p elixpo-cli --features vosk-stt -- voice --offline
 ```
 
-For the live agent path, add the Pollinations credential and exact model:
+For the live agent path, add the Pollinations credential. GPT-5.4 Nano is the
+selected default; set `OREO_MODEL` only to evaluate an explicit alternative:
 
 ```bash
 rtk env OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
-  POLLINATIONS_API_KEY="..." OREO_MODEL="..." \
+  POLLINATIONS_API_KEY="..." \
   cargo run -p elixpo-cli --features vosk-stt -- voice
 ```
 

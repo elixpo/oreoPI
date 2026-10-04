@@ -25,7 +25,8 @@ microphone -> bounded PCM conversion -> Vosk -> Oreo agent -> text response
 The developer voice command uses explicit Enter-to-start/Enter-to-stop capture.
 Wake-word detection, TTS, and hardware GPIO are later layers. The CLI keeps an
 explicit offline path and enables the live Pollinations provider only when its
-credential and exact model are supplied through the process environment.
+credential is supplied through the process environment. GPT-5.4 Nano is the
+pinned default; `OREO_MODEL` can override it for controlled evaluations.
 
 ## Build and test
 
@@ -47,8 +48,8 @@ cargo run -p elixpo-cli -- memory list
 cargo run -p elixpo-cli -- memory inspect <session-id>
 cargo run -p elixpo-cli -- daemon stop
 cargo run -p elixpo-cli -- ask --offline "What is running?"
-POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask "Hello Oreo"
-POLLINATIONS_API_KEY=... OREO_MODEL=... cargo run -p elixpo-cli -- ask --metrics "Hello Oreo"
+POLLINATIONS_API_KEY=... cargo run -p elixpo-cli -- ask "Hello Oreo"
+POLLINATIONS_API_KEY=... cargo run -p elixpo-cli -- ask --metrics "Hello Oreo"
 ```
 
 The Vosk-enabled microphone-to-agent acceptance commands and native-library

@@ -10,7 +10,7 @@ and checksummed separately from application packages.
 | Layer | Primary candidate | Fallback | Benchmark focus |
 |---|---|---|---|
 | Capture/playback | [CPAL 0.18.2](https://github.com/RustAudio/cpal/releases/tag/v0.18.2), selected | Direct ALSA adapter only if CPAL measurements require it | PipeWire/PulseAudio/ALSA behavior, callback overruns, fixed-buffer latency, AMD64/ARM64 packaging |
-| Offline STT | [Vosk 0.3.45](https://alphacephei.com/vosk/) with `vosk-model-small-en-us-0.15`, provisional laptop selection | [sherpa-onnx 1.13.8](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8) with English-only 20M streaming Zipformer INT8 as the resource fallback | Accuracy on Oreo command fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
+| Offline STT | [Vosk 0.3.45](https://alphacephei.com/vosk/) with `vosk-model-small-en-us-0.15`, selected for the laptop profile | [sherpa-onnx 1.13.8](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8) with English-only 20M streaming Zipformer INT8 as the resource fallback | Accuracy on Oreo command fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
 | Streaming TTS | [PocketTTS 3.3.0](https://github.com/kyutai-labs/pocket-tts/releases/tag/v3.3.0) | Selected only after the primary misses a hard gate | First-audio latency, real-time factor, RSS, cancellation, pronunciation, voice/model licensing, AMD64/ARM64 packaging |
 
 ## Selection rules
@@ -28,7 +28,7 @@ and checksummed separately from application packages.
   release; an upstream binary existing is not a substitute for a device
   benchmark.
 
-Vosk is the provisional primary and low-resource baseline: its official
+Vosk is the selected laptop primary and low-resource baseline: its official
 small-model guidance targets mobile/Raspberry Pi-class systems, but its older
 native stack and accuracy must be measured against current sherpa-onnx models
 rather than assumed. PocketTTS source is MIT; the selected voice and model
@@ -53,12 +53,12 @@ fixtures, and the reference x86-64 laptop. Aggregate WER includes every run.
 | Vosk small en-US 0.15 | 4.71% | 779 ms | 193,476 KiB | 68 MB | 14/15 hypotheses matched the modal transcript |
 | Sherpa Zipformer en-20M INT8 | 41.18% | 228 ms | 143,988 KiB | 44 MB | 15/15 hypotheses stable |
 
-Vosk is the provisional primary because it stays below the 1.2-second cached
+Vosk is the laptop primary because it stays below the 1.2-second cached
 STT gate while reducing command error by almost an order of magnitude. Sherpa
 is faster and lighter but its errors removed the action from “set a timer” and
 badly distorted “device status”; it cannot be the default for this fixture set.
 Sherpa remains the resource fallback for later hotword or model experiments.
 
-This is not the hardware-release verdict. Vosk must still pass cancellation,
-the 30-minute no-growth soak, a larger voice/noise fixture set, and the Linux
-AArch64 benchmark before it is included in a production image.
+This is not the hardware-release verdict. Vosk has passed cancellation and the
+30-minute no-growth laptop soak; a larger voice/noise fixture set and the Linux
+AArch64 benchmark remain required before it is included in a production image.
