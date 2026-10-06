@@ -57,17 +57,23 @@ def sha256(path: Path) -> str:
 def paths() -> dict[str, Path]:
     root = Path(__file__).resolve().parent.parent
     training = root / "models/training/openwakeword"
+    config_path = training / "oreo-training.json"
+    model_name = "oreo-context-v2"
+    output_dir = training / "output/oreo"
+    if config_path.is_file():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        model_name = str(config["model_name"])
+        output_dir = Path(str(config["output_dir"]))
+    artifact_dir = output_dir / model_name
     return {
         "root": root,
         "training": training,
-        "config": training / "oreo-training.json",
+        "config": config_path,
         "piper": training / "piper-sample-generator",
         "feature_dir": root / "models/cache/openwakeword-v0.5.1-features",
-        "negative_test": training
-        / "output/oreo/oreo/negative_features_test.npy",
-        "negative_validation": training
-        / "output/oreo/oreo/negative_validation_features.npy",
-        "trained_model": training / "output/oreo/oreo.onnx",
+        "negative_test": artifact_dir / "negative_features_test.npy",
+        "negative_validation": artifact_dir / "negative_validation_features.npy",
+        "trained_model": output_dir / f"{model_name}.onnx",
         "cached_model": root / "models/cache/openwakeword-oreo/oreo.onnx",
     }
 
@@ -290,8 +296,15 @@ def main() -> int:
             check_training_imports(project)
             train_source()
             config = json.loads(project["config"].read_text(encoding="utf-8"))
-            if config["target_phrase"] != ["oreo", "orio"]:
-                raise RuntimeError("training target is no longer the reviewed identity pair")
+            targets = config["target_phrase"]
+            if (
+                len(targets) < 60
+                or "oreo" not in targets
+                or "i bought oreo cookies" not in targets
+                or "audio" in targets
+                or max(len(phrase.split()) for phrase in targets) > 5
+            ):
+                raise RuntimeError("training targets no longer represent identity presence")
             print("openWakeWord ONNX training preflight passed")
         elif arguments.command == "phase":
             run_phase(project, arguments.name)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -36,6 +37,18 @@ def unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value.strip().casefold() for value in values if value.strip()))
 
 
+def identity_windows(phrases: list[str], mentions: set[str]) -> list[str]:
+    windows: list[str] = []
+    for phrase in phrases:
+        words = re.findall(r"[a-z0-9]+", phrase.casefold())
+        for index, word in enumerate(words):
+            if word in mentions:
+                windows.append(
+                    " ".join(words[max(0, index - 2) : min(len(words), index + 3)])
+                )
+    return windows
+
+
 def build_config(base_path: Path, corpus_path: Path, training_root: Path) -> dict[str, object]:
     config = json.loads(base_path.read_text(encoding="utf-8"))
     targets = config.pop("identity_targets", None)
@@ -49,9 +62,10 @@ def build_config(base_path: Path, corpus_path: Path, training_root: Path) -> dic
         isinstance(item, str) for item in acoustic_negatives
     ):
         raise ValueError("acoustic_negative_phrases must be a string list")
-    _, ignore = corpus_phrases(corpus_path)
-    targets = unique(targets)
+    wake, ignore = corpus_phrases(corpus_path)
     mention_words = {word.casefold() for word in mentions}
+    carrier_phrases = identity_windows(wake + ignore, mention_words)
+    targets = unique(targets + carrier_phrases)
     semantic_negatives = [
         phrase
         for phrase in ignore
@@ -110,8 +124,11 @@ def main() -> int:
         )
         config = build_config(base, corpus, training_root)
         if arguments.command == "self-test":
-            assert config["target_phrase"] == ["oreo", "orio"]
+            assert len(config["target_phrase"]) >= 60
             assert "oreo" in config["target_phrase"]
+            assert "i bought oreo cookies" in config["target_phrase"]
+            assert "audio" not in config["target_phrase"]
+            assert max(len(phrase.split()) for phrase in config["target_phrase"]) <= 5
             assert "audio" in config["custom_negative_phrases"]
             assert "i bought oreo cookies" not in config["custom_negative_phrases"]
             assert config["feature_data_files"] == {}

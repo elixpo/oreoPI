@@ -1,5 +1,5 @@
 {
-  "model_name": "oreo",
+  "model_name": "oreo-context-v2",
   "identity_targets": ["oreo", "orio"],
   "identity_mentions": ["oreo", "oreos", "orio"],
   "acoustic_negative_phrases": [
@@ -20,7 +20,7 @@
   "rir_paths": ["data/mit_rirs"],
   "background_paths": ["data/background_clips"],
   "background_paths_duplication_rate": [1],
-  "false_positive_validation_data_path": "output/oreo/oreo/negative_validation_features.npy",
+  "false_positive_validation_data_path": "output/oreo/oreo-context-v2/negative_validation_features.npy",
   "augmentation_rounds": 1,
   "feature_data_files": {},
   "batch_n_per_class": {

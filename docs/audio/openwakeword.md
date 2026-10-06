@@ -5,11 +5,15 @@ Date: 2026-10-05
 ## Boundary
 
 openWakeWord is Oreo's acoustic candidate detector, not its final intent
-authority. The binary model learns only the spoken identity (`oreo` plus the
-pronunciation alias `orio`) across synthetic voices and acoustic augmentation.
-It does not learn command sentences or a four-phrase lookup table. Because it
-runs over a sliding audio window, that identity can occur anywhere in an
-otherwise unseen sentence. A positive score only releases the bounded
+authority. Its positive label means that the spoken identity is present
+anywhere in the window. Training therefore includes the identity alone and a
+large, reviewed mix of direct-address and product carrier sentences. Product
+sentences are intentionally positive here: this prevents the acoustic model
+from learning semantics and leaves Vosk plus the intent classifier responsible
+for rejecting product discussion. The carriers are training variation, not a
+runtime phrase lookup table. Each carrier is capped at two neighboring words
+on either side of the identity so the classifier retains a short input window
+and low SBC cost. A positive score only releases the bounded
 three-second window to Vosk and the local contextual classifier. The capture
 keeps one bounded second after an early acoustic hit so the classifier sees
 enough context to distinguish direct address from product discussion.
@@ -18,12 +22,12 @@ Energy VAD is not used to identify Oreo. openWakeWord's optional Silero VAD may
 later gate non-speech noise, but an openWakeWord score, a Vosk transcript, and
 the contextual intent decision remain separate evidence.
 
-The corpus-driven generator intentionally excludes Oreo product sentences from
-acoustic training: openWakeWord should hear the name permissively, then let the
-intent classifier reject product discussion. Its negative set contains speech
-without the identity plus acoustic confusables such as “audio,” “ordeal,” “all
-you,” “oriole,” and “stereo.” Changing the reviewed corpus regenerates the
-training configuration; application code contains no wake-phrase list.
+The corpus-driven generator excludes Oreo product sentences from the negative
+class and includes them in identity-present positives. Its negative set
+contains speech without the identity plus acoustic confusables such as
+“audio,” “ordeal,” “all you,” “oriole,” and “stereo.” Changing the reviewed
+corpus regenerates the training configuration; application code contains no
+wake-phrase list.
 
 ## Isolated environment
 
@@ -120,6 +124,16 @@ The first exported `oreo.onnx` is only a candidate. It must pass the existing
 eight-fixture cascade, new pronunciation/accent fixtures, television/music
 negatives, an overnight false-activation soak, and an AArch64 resource run.
 The target is not approved merely because it recognizes the training phrases.
+
+### Rejected isolated-identity candidate
+
+The first 205,430-byte ONNX candidate (`a3e5cd99be4f3c6c960b1c55a0f17355f43a1d7c9fddc522dc22447e667f5b76`)
+trained only on isolated `oreo`/`orio`. It reached 78.05% synthetic validation
+accuracy, 56.2% recall, and 2.57 synthetic false positives/hour. At threshold
+0.5 it detected only the standalone-name fixture; lowering the threshold made
+valid phrases overlap with `stereo` and product negatives. No threshold passed
+the cascade, so this artifact is rejected. The context-v2 experiment replaces
+it with the identity-present carrier strategy above.
 
 Place a candidate at `models/cache/openwakeword-oreo/oreo.onnx`, then run the
 same end-to-end fixtures through the openWakeWord candidate, Vosk, and intent
