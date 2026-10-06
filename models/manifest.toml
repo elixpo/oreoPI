@@ -146,3 +146,22 @@ retained_sha256 = [
 ]
 retained_bytes = [1087958, 1326578]
 licence = "Apache-2.0 shared feature extraction models"
+
+[[models]]
+id = "openwakeword-oreo-context-v2"
+engine = "openwakeword"
+engine_version = "0.6.0"
+language = "en"
+role = "wake-candidate"
+source = "local synthetic training; config/openwakeword-training.base.json"
+installed_directory = "openwakeword-oreo"
+artifact = "oreo.onnx"
+artifact_bytes = 205430
+artifact_sha256 = "3f15cc0aa8e23a897e089475b5447f16f049a4b70cb65da8131db5780a35674e"
+threshold = 0.005
+training_targets = 79
+training_positive_samples = 10000
+training_negative_samples = 10000
+input_window_seconds = 2
+licence_review = "required; synthetic speech derives from LibriTTS-R CC BY 4.0"
+selection_gate = "recorded ordeal/audio confusables, background soak, and AArch64 resource benchmark"

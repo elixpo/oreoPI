@@ -48,6 +48,30 @@
       "wav": "fixtures/weather-conversation.wav",
       "transcript": "the weather looks pleasant today",
       "expected_wake": false
+    },
+    {
+      "id": "ordeal-word",
+      "wav": "fixtures/ordeal-word.wav",
+      "transcript": "ordeal",
+      "expected_wake": false
+    },
+    {
+      "id": "ordeal-sentence",
+      "wav": "fixtures/ordeal-sentence.wav",
+      "transcript": "the ordeal was difficult",
+      "expected_wake": false
+    },
+    {
+      "id": "audio-word",
+      "wav": "fixtures/audio-word.wav",
+      "transcript": "audio",
+      "expected_wake": false
+    },
+    {
+      "id": "audio-sentence",
+      "wav": "fixtures/audio-sentence.wav",
+      "transcript": "please play the audio recording",
+      "expected_wake": false
     }
   ]
 }

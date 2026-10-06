@@ -136,6 +136,24 @@ valid phrases overlap with `stereo` and product negatives. No threshold passed
 the cascade, so this artifact is rejected. The context-v2 experiment replaces
 it with the identity-present carrier strategy above.
 
+### Context-v2 candidate
+
+The context-v2 artifact is also 205,430 bytes
+(`3f15cc0aa8e23a897e089475b5447f16f049a4b70cb65da8131db5780a35674e`).
+Its synthetic-only aggregate is poor (70.53% accuracy, 42.45% recall, and
+78.05 false positives/hour), so it cannot be promoted from training metrics.
+On the recorded cascade at threshold 0.5, however, it accepts all three
+contextual wakes and rejects all four negatives; only standalone Oreo is
+missed. Vosk renders that standalone recording as `ordeal`, so `ordeal` is a
+reviewed STT identity alias like `audio`. Ordinary sentences containing the
+word still receive negative contextual evidence. A permissive threshold is
+experimental until hard-confusable recordings and a background soak pass. At
+threshold 0.005, after adding the observed `ordeal` STT alias, the existing
+eight-fixture cascade completed 24/24 stable runs with zero false accepts and
+zero false rejects; p95 end-to-end latency was about 815 ms. This is sufficient
+to promote context-v2 to the current candidate, but not to select it for the
+product.
+
 Place a candidate at `models/cache/openwakeword-oreo/oreo.onnx`, then run the
 same end-to-end fixtures through the openWakeWord candidate, Vosk, and intent
 gate:
@@ -144,7 +162,7 @@ gate:
 rtk .venv-wake/bin/python scripts/benchmark-wake.py run \
   --kws-engine openwakeword \
   --manifest tests/audio/wake-fixtures.local.json \
-  --openwakeword-threshold 0.5 \
+  --openwakeword-threshold 0.005 \
   --output target/audio-bench/wake-openwakeword.json
 ```
 
