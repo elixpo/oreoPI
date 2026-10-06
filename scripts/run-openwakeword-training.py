@@ -155,7 +155,10 @@ def patch_audio_features(project: dict[str, Path]) -> None:
 def patch_pronunciation_dictionary() -> None:
     import pronouncing
 
-    reviewed = {"orio": ["AO1 R IY0 OW0"]}
+    reviewed = {
+        "orio": ["AO1 R IY0 OW0"],
+        "oreos": ["AO1 R IY0 OW0 Z"],
+    }
     original = pronouncing.phones_for_word
 
     def phones_for_word(word: str) -> list[str]:
@@ -179,7 +182,20 @@ def check_training_imports(project: dict[str, Path]) -> None:
             raise RuntimeError("Piper generator does not provide the reviewed default model")
         importlib.import_module("openwakeword.train")
         training_data = importlib.import_module("openwakeword.data")
-        adversarial = training_data.generate_adversarial_texts("orio", N=8)
+        config = json.loads(project["config"].read_text(encoding="utf-8"))
+        target_words = {
+            word for phrase in config["target_phrase"] for word in phrase.split()
+        }
+        import pronouncing
+
+        missing = sorted(
+            word for word in target_words if not pronouncing.phones_for_word(word)
+        )
+        if missing:
+            raise RuntimeError(
+                "training targets have unreviewed pronunciations: " + ", ".join(missing)
+            )
+        adversarial = training_data.generate_adversarial_texts("orio oreos", N=8)
         if len(adversarial) != 8:
             raise RuntimeError("reviewed Orio pronunciation produced no hard negatives")
     finally:

@@ -116,9 +116,10 @@ rtk .venv-wake/bin/python scripts/run-openwakeword-training.py install-candidate
 The runner verifies the installed package versions and reviewed upstream
 `train.py`, supplies the repository-cached feature backbones, flattens held-out
 negative features for the validation interface, exports ONNX, and omits the
-unneeded TensorFlow/TFLite conversion. The spelling alias `orio` is absent from
-CMUdict, so the runner supplies its reviewed `AO R IY OW` pronunciation locally;
-it does not use openWakeWord's obsolete DeepPhonemizer download URL.
+unneeded TensorFlow/TFLite conversion. The spellings `orio` and `oreos` are
+absent from CMUdict, so the runner supplies their reviewed `AO R IY OW` and
+`AO R IY OW Z` pronunciations locally. Preflight rejects any remaining unknown
+target word instead of using openWakeWord's obsolete DeepPhonemizer URL.
 
 The first exported `oreo.onnx` is only a candidate. It must pass the existing
 eight-fixture cascade, new pronunciation/accent fixtures, television/music
