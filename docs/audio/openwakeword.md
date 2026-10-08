@@ -169,6 +169,31 @@ rtk .venv-wake/bin/python scripts/benchmark-wake.py run \
 The report records the exact ONNX digest and raw candidate score so thresholds
 can be compared without replacing the model artifact.
 
+## Background soak
+
+Capture ambient room, television, music, and ordinary conversation without
+intentionally addressing Oreo. One hour is the first gate; eight hours is the
+selection gate. A one-hour PCM16 recording is about 110 MiB:
+
+```bash
+rtk arecord -q -f S16_LE -r 16000 -c 1 -d 3600 \
+  target/audio-bench/wake-background-1h.wav
+```
+
+Process it with the memory-bounded cascade runner:
+
+```bash
+rtk .venv-wake/bin/python scripts/soak-wake.py \
+  --wav target/audio-bench/wake-background-1h.wav \
+  --threshold 0.005 \
+  --output target/audio-bench/wake-background-1h.json
+```
+
+The runner retains only event timestamps, scores, transcripts, and decisions in
+the report. Candidate rate measures Vosk/CPU pressure; accepted false
+activations determine the user-visible gate. The candidate must record zero
+accepted activations in the initial hour before the eight-hour run.
+
 ## Licence boundary
 
 openWakeWord code is Apache-2.0. Upstream states that its included pretrained
