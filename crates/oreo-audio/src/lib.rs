@@ -3,6 +3,8 @@
 //! Raw PCM exists only in short-lived chunks. This crate has no persistence,
 //! network, credential, or model-loading API.
 
+#[cfg(feature = "voice-runtime")]
+mod ambient_runtime;
 mod conversation;
 mod converter;
 mod cpal_io;
@@ -27,6 +29,8 @@ use std::fmt;
 
 use oreo_core::CancellationToken;
 
+#[cfg(feature = "voice-runtime")]
+pub use ambient_runtime::AmbientVoicePipeline;
 pub use conversation::{ConversationDirective, ConversationLanguage};
 pub use converter::{ConvertingSource, PcmConverter};
 pub use cpal_io::{
@@ -45,8 +49,8 @@ pub use vad::{EnergyVad, VadConfig, VadDecision};
 #[cfg(feature = "vosk-stt")]
 pub use vosk_stt::{VoskConfidence, VoskTranscriber};
 pub use wake::{
-    WakeAudioWindow, WakeIntentClassifier, WakeIntentDecision, WakeIntentDisposition,
-    WarmTurnClassifier,
+    AmbientAttentionDecision, AmbientAttentionGate, WakeAudioWindow, WakeIntentClassifier,
+    WakeIntentDecision, WakeIntentDisposition, WarmTurnClassifier,
 };
 #[cfg(feature = "voice-runtime")]
 pub use wake_runtime::{ConversationAudioPhase, WakeCommandPipeline, WakePipelineEvent};

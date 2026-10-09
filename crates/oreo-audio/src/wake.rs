@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use oreo_core::CancellationToken;
 
-use crate::{AudioError, AudioErrorKind, AudioFormat, PcmChunk, STT_FORMAT};
+use crate::{
+    AudioError, AudioErrorKind, AudioFormat, ConversationDirective, ConversationLanguage, PcmChunk,
+    STT_FORMAT,
+};
 
 const MAX_WAKE_TEXT_BYTES: usize = 512;
 const IDENTITY_INTENT_THRESHOLD: f64 = 1.0;
@@ -100,6 +103,105 @@ pub enum WakeIntentDisposition {
     Ignore,
     Clarify,
     Addressed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AmbientAttentionDecision {
+    Ignore,
+    AttentionRaised,
+    Command,
+    Sleep,
+}
+
+/// Local contextual gate for continuously transcribed room speech.
+///
+/// A dormant assistant requires its acoustic attention name in a phrase that
+/// is actually addressed to it. Once attentive, the reviewed warm-turn model
+/// accepts natural follow-ups without requiring the name on every turn.
+pub struct AmbientAttentionGate {
+    cold: WakeIntentClassifier,
+    warm: WarmTurnClassifier,
+    conversation: ConversationLanguage,
+    attentive: bool,
+}
+
+impl AmbientAttentionGate {
+    /// Builds a local gate for one pronounceable attention name.
+    ///
+    /// # Errors
+    ///
+    /// Rejects names that are not one short ASCII word and invalid embedded
+    /// classifier data.
+    pub fn new(attention_name: &str) -> Result<Self, AudioError> {
+        Ok(Self {
+            cold: WakeIntentClassifier::for_attention_name(attention_name)?,
+            warm: WarmTurnClassifier::embedded()?,
+            conversation: ConversationLanguage::embedded()?,
+            attentive: false,
+        })
+    }
+
+    #[must_use]
+    pub const fn is_attentive(&self) -> bool {
+        self.attentive
+    }
+
+    pub fn sleep(&mut self) {
+        self.attentive = false;
+    }
+
+    /// Assesses one completed local transcript without any network call.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty, oversized, or otherwise invalid classifier input.
+    pub fn assess(&mut self, transcript: &str) -> Result<AmbientAttentionDecision, AudioError> {
+        if self.attentive {
+            match self.conversation.classify(transcript)? {
+                ConversationDirective::Sleep => {
+                    self.attentive = false;
+                    return Ok(AmbientAttentionDecision::Sleep);
+                }
+                ConversationDirective::AddressOnly => {
+                    return Ok(AmbientAttentionDecision::AttentionRaised);
+                }
+                ConversationDirective::Command => {}
+            }
+            if self.cold.is_attention_only(transcript) {
+                return Ok(AmbientAttentionDecision::AttentionRaised);
+            }
+            if self.cold.mentions_spoken_identity(transcript) {
+                if self.cold.classify(transcript)?.disposition != WakeIntentDisposition::Addressed {
+                    return Ok(AmbientAttentionDecision::Ignore);
+                }
+            } else if !self.warm.accepts(transcript)? {
+                return Ok(AmbientAttentionDecision::Ignore);
+            }
+            return Ok(AmbientAttentionDecision::Command);
+        }
+
+        let decision = self.cold.classify(transcript)?;
+        if !decision.identity_present || decision.disposition != WakeIntentDisposition::Addressed {
+            return Ok(AmbientAttentionDecision::Ignore);
+        }
+        self.attentive = true;
+        if self.cold.is_attention_only(transcript)
+            || self.conversation.classify(transcript)? == ConversationDirective::AddressOnly
+        {
+            Ok(AmbientAttentionDecision::AttentionRaised)
+        } else {
+            Ok(AmbientAttentionDecision::Command)
+        }
+    }
+
+    /// Tests a formed partial as a possible conversational interruption.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid classifier input.
+    pub fn accepts_warm_partial(&self, transcript: &str) -> Result<bool, AudioError> {
+        self.warm.accepts(transcript)
+    }
 }
 
 /// Tiny Bernoulli Naive Bayes classifier trained from the reviewed corpus.
@@ -204,6 +306,21 @@ impl WakeIntentClassifier {
             EMBEDDED_ALIASES,
             EMBEDDED_SPOKEN_IDENTITIES,
         )
+    }
+
+    /// Trains the contextual model with a runtime acoustic attention name.
+    /// Oreo remains a product/persona identity, while the configured word is
+    /// used as the clearer microphone-facing name.
+    fn for_attention_name(attention_name: &str) -> Result<Self, AudioError> {
+        let words = lexical_words(attention_name);
+        if words.len() != 1 || words[0].len() < 3 || words[0].len() > 24 {
+            return Err(AudioError::new(
+                AudioErrorKind::InvalidConfig,
+                "attention name must be one short word",
+            ));
+        }
+        let aliases = format!("oreo\norio\n{}", words[0]);
+        Self::train(EMBEDDED_CORPUS, &aliases, &aliases)
     }
 
     fn train(corpus: &str, aliases: &str, spoken_identities: &str) -> Result<Self, AudioError> {
@@ -325,6 +442,26 @@ impl WakeIntentClassifier {
         !words.is_empty() && words.iter().all(|word| self.aliases.contains(word))
     }
 
+    /// Returns true for a bare identity or a small vocative around it. This
+    /// raises local attention but is never itself sent to the agent.
+    #[must_use]
+    pub fn is_attention_only(&self, transcript: &str) -> bool {
+        let words = lexical_words(transcript);
+        let words = match words.as_slice() {
+            [first, rest @ ..]
+                if matches!(
+                    first.as_str(),
+                    "hey" | "hello" | "hi" | "okay" | "ok" | "yo"
+                ) =>
+            {
+                rest
+            }
+            [first, second, rest @ ..] if first == "wake" && second == "up" => rest,
+            words => words,
+        };
+        !words.is_empty() && words.iter().all(|word| self.aliases.contains(word))
+    }
+
     /// Returns true for literal Oreo identity words, excluding acoustic-only
     /// Vosk corrections such as `audio` and `ordeal`.
     #[must_use]
@@ -393,7 +530,46 @@ mod tests {
 
     use crate::{AudioErrorKind, AudioFormat, PcmChunk, STT_FORMAT};
 
-    use super::{WakeAudioWindow, WakeIntentClassifier, WakeIntentDisposition, WarmTurnClassifier};
+    use super::{
+        AmbientAttentionDecision, AmbientAttentionGate, WakeAudioWindow, WakeIntentClassifier,
+        WakeIntentDisposition, WarmTurnClassifier,
+    };
+
+    #[test]
+    fn ambient_gate_requires_contextual_orion_address_when_dormant() {
+        let mut gate = AmbientAttentionGate::new("Orion").expect("gate trains");
+        assert_eq!(
+            gate.assess("I am speaking to Orion").expect("text scores"),
+            AmbientAttentionDecision::Ignore
+        );
+        assert_eq!(
+            gate.assess("Orion can you hear me").expect("text scores"),
+            AmbientAttentionDecision::Command
+        );
+        assert!(gate.is_attentive());
+    }
+
+    #[test]
+    fn ambient_gate_accepts_natural_warm_followups_and_can_sleep() {
+        let mut gate = AmbientAttentionGate::new("Orion").expect("gate trains");
+        assert_eq!(
+            gate.assess("Orion").expect("text scores"),
+            AmbientAttentionDecision::AttentionRaised
+        );
+        assert_eq!(
+            gate.assess("hey Orion").expect("text scores"),
+            AmbientAttentionDecision::AttentionRaised
+        );
+        assert_eq!(
+            gate.assess("explain how stars form").expect("text scores"),
+            AmbientAttentionDecision::Command
+        );
+        assert_eq!(
+            gate.assess("we're done").expect("text scores"),
+            AmbientAttentionDecision::Sleep
+        );
+        assert!(!gate.is_attentive());
+    }
 
     #[test]
     fn rolling_audio_window_forgets_oldest_samples() {

@@ -604,6 +604,12 @@ fn filter_barge(
         .then(|| barge_in(transcript)))
 }
 
+impl Drop for WakeCommandPipeline {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::has_barge_in_evidence;
@@ -614,11 +620,5 @@ mod tests {
         assert!(has_barge_in_evidence("wait listen"));
         assert!(has_barge_in_evidence("explain supernovae"));
         assert!(has_barge_in_evidence("choose another route"));
-    }
-}
-
-impl Drop for WakeCommandPipeline {
-    fn drop(&mut self) {
-        self.shutdown();
     }
 }

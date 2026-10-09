@@ -69,40 +69,44 @@ The repository ignores every WAV file. Keep the expected sentence separately
 in the local benchmark manifest when measuring word error rate; do not tune a
 free-conversation recognizer with a restrictive command grammar.
 
-## Always-on daemon wake runtime
+## Always-on contextual daemon runtime
 
 The laptop-selected daemon path is:
 
 ```text
-CPAL -> bounded 16 kHz conversion -> openWakeWord worker
-     -> streaming Vosk/intent gate -> immediate turn or VAD follow-up
+CPAL -> bounded 16 kHz conversion -> continuously reused Vosk recognizer
+     -> local contextual attention gate -> accepted turn only
      -> 30-second contextual conversation window
 ```
 
-The openWakeWord worker is pinned to `.venv-wake`, has networking and inherited
-environment variables removed, accepts only fixed 1,280-sample frames, and
-returns one bounded score. Rust owns the rolling window, thresholds, Vosk,
-follow-up timeout, cancellation, and microphone lifecycle. Candidate audio is
-streamed into Vosk until the phase-specific natural-silence endpoint; there is
-no fixed one-second post-roll.
+The daemon continuously segments locally decoded speech at a conservative
+600 ms natural-silence endpoint. Vosk is loaded once and reused; each utterance
+is capped at 30 seconds. A tiny local contextual model decides whether a phrase
+is directed at the assistant before any transcript can enter the Pollinations
+agent queue. Raw PCM is never persisted.
+
+`Orion` (`oh-RYE-un`) is the default acoustic attention name for the Oreo
+persona because its syllables are substantially clearer to the small English
+recognizer than “Oreo”. Set `OREO_ATTENTION_NAME` to one 3–24 letter ASCII word
+to evaluate another name. The product identity and spoken persona remain Oreo.
 
 There are three interaction modes:
 
-- Saying only an accepted rendering of `Oreo` emits `wake_accepted` and opens a
-  five-second follow-up window. The follow-up ends after 600 ms of silence.
-- An accepted contextual utterance such as “Oreo, set a timer” or “what is the
-  weather, Oreo?” is already the command. It emits `voice_command_ready`
+- Saying only `Orion` emits `wake_accepted` and raises attention without making
+  a network request.
+- An accepted contextual utterance such as “Orion, set a timer” or “what is the
+  weather, Orion?” is already the command. It emits `voice_command_ready`
   immediately after its endpoint and does not ask for the sentence again.
 - Each command opens or refreshes a 30-second engaged window. During that
-  window, VAD starts a natural follow-up without another wake phrase. An
-  address-only nickname from `config/conversation-addresses.txt` opens the same
-  five-second follow-up capture. Those nicknames never enter the cold acoustic
-  detector. An exact phrase from `config/conversation-sleep-phrases.txt`, or
-  30 seconds without another command, closes the window.
+  window, natural locally classified follow-ups do not need the name. An
+  address-only nickname from `config/conversation-addresses.txt` raises
+  attention only inside this warm session. An exact phrase from
+  `config/conversation-sleep-phrases.txt`, or 30 seconds without another
+  accepted command, closes the window.
 
 The engaged window follows three explicit runtime phases:
 
-- `voice_listening`: a cold session requires Oreo; a warm session accepts a
+- `voice_listening`: a cold session requires Orion; a warm session accepts a
   locally classified conversational turn without repeating the name.
 - `voice_thinking`: the warm-session idle clock is frozen and the microphone
   remains open. A genuine correction steers the active turn while carrying the
@@ -122,12 +126,15 @@ An engaged VAD event that produces no Vosk text is treated as ambient noise. It
 returns to the remaining conversation window without emitting a command timeout
 or resetting the session.
 
-Cold attention is a three-way local decision. Direct address proceeds, reported
-or third-person mentions such as “I am speaking to Oreo” remain silent, and a
-narrow ambiguous score emits `voice_clarification_needed` without entering the
-agent queue. The reviewed mention examples live beside the wake corpus. Pocket
-TTS turns that event into a fixed local “Were you talking to me?” prompt; the
-ambiguity itself never causes a Pollinations request.
+Cold attention requires both the configured name and local direct-address
+classification. Reported or third-person mentions such as “I am speaking to
+Orion” remain silent. Warm speech still passes through the separate local turn
+classifier, so merely leaving the microphone open does not forward room audio.
+
+On a single laptop microphone, “nearest voice” means the dominant, clearly
+decoded utterance after energy and Vosk-confidence filtering. True speaker
+direction or physical proximity cannot be inferred from mono PCM; that will be
+added behind the same gate when the target SBC has a microphone array.
 
 The maximum utterance remains 30 seconds. Rejected cold candidates use a 500 ms
 reset cooldown to prevent one utterance from triggering twice. A bounded
@@ -138,6 +145,7 @@ For transcription-only validation, run the daemon from the repository root:
 
 ```bash
 rtk env OREO_VOICE_ENABLED=1 OREO_REPO_ROOT="$PWD" \
+  OREO_ATTENTION_NAME=orion \
   OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   cargo run -p oreo-daemon --features voice-runtime
@@ -150,6 +158,7 @@ executing the file; process environment values take precedence. Then run:
 
 ```bash
 rtk env OREO_VOICE_ENABLED=1 OREO_AGENT_ENABLED=1 OREO_REPO_ROOT="$PWD" \
+  OREO_ATTENTION_NAME=orion \
   OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   cargo run -p oreo-daemon --features voice-agent
@@ -159,6 +168,10 @@ Wait for `voice_listening`, then test all interaction modes above. A successful
 transcription emits `voice_command_ready`; its text is deliberately absent from
 logs. Session closure emits `voice_conversation_ended`. Stop the daemon from
 another terminal with `cargo run -p elixpo-cli -- daemon stop`.
+
+For local diagnostics only, add `OREO_VOICE_DEBUG_TRANSCRIPTS=1`. This prints
+bounded partial and final transcripts to standard error and must remain off in
+normal or production operation.
 
 With `voice-agent`, commands enter a bounded eight-message controller on a
 separate network thread. Response deltas are split at natural sentence
