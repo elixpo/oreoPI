@@ -201,9 +201,24 @@ contained a reviewed Oreo identity alias: ordinary audiobook dialogue was being
 accepted solely because it resembled direct address. The intent gate therefore
 uses two confidence levels. A transcript with an identity alias retains the
 reviewed `1.0` threshold; a transcript where Vosk lost the identity must reach
-`5.0`. Replaying all 229 held-out transcripts through that rule yields zero
+`5.0`. Replaying all 229 calibration transcripts through that rule yields zero
 accepted activations, while the 12-fixture cascade remains 36/36 correct. A new
-full soak report is still required before promotion.
+full soak report is still required before promotion. Because this hour informed
+the threshold, it is calibration data rather than an independent selection
+gate.
+
+Build a disjoint second hour from the already-cached archive and use that as the
+validation gate. The second argument is the source offset in seconds, so this
+does not download anything again:
+
+```bash
+rtk ./scripts/fetch-wake-soak-corpus.sh \
+  target/audio-bench/librispeech-test-other-validation-1h.wav 3600
+rtk .venv-wake/bin/python scripts/soak-wake.py \
+  --wav target/audio-bench/librispeech-test-other-validation-1h.wav \
+  --threshold 0.005 \
+  --output target/audio-bench/wake-librispeech-validation-1h.json
+```
 
 This reproducible test replaces the laptop-room recording, not the final device
 acceptance test. Once Oreo moves to its SBC and microphone enclosure, it still

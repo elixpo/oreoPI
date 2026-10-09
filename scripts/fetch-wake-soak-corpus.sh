@@ -8,9 +8,17 @@ archive="$cache_dir/test-other.tar.gz"
 archive_part="$archive.part"
 dataset_dir="$cache_dir/LibriSpeech/test-other"
 output="${1:-$repo_root/target/audio-bench/librispeech-test-other-1h.wav}"
+start_seconds="${2:-0}"
 source_url="https://www.openslr.org/resources/12/test-other.tar.gz"
 expected_md5="fb5a50374b501bb3bac4815ee91d3135"
 target_seconds=3600
+max_start_seconds=14400
+
+if [[ ! "$start_seconds" =~ ^[0-9]+$ ]] \
+  || (( start_seconds > max_start_seconds )); then
+  echo "error: start offset must be an integer from 0 to $max_start_seconds seconds" >&2
+  exit 2
+fi
 
 for command in curl md5sum tar ffmpeg python3; do
   if ! command -v "$command" >/dev/null 2>&1; then
@@ -76,7 +84,7 @@ if [[ ! -s "$list_file" ]]; then
 fi
 
 ffmpeg -hide_banner -loglevel error -nostdin -y \
-  -f concat -safe 0 -i "$list_file" -t "$target_seconds" \
+  -f concat -safe 0 -i "$list_file" -ss "$start_seconds" -t "$target_seconds" \
   -ac 1 -ar 16000 -c:a pcm_s16le "$output_part"
 
 python3 - "$output_part" "$target_seconds" <<'PY'
@@ -99,4 +107,4 @@ PY
 
 mv -- "$output_part" "$output"
 sha256sum "$output" > "$output.sha256.local"
-echo "LibriSpeech one-hour wake soak corpus written to $output"
+echo "LibriSpeech one-hour wake soak corpus at offset ${start_seconds}s written to $output"
