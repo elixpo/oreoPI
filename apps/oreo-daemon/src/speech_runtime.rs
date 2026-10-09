@@ -16,7 +16,7 @@ use oreo_core::CancellationToken;
 const SPEECH_QUEUE_CAPACITY: usize = 16;
 const ECHO_REFERENCE_CAPACITY: usize = 8;
 const ECHO_TAIL: Duration = Duration::from_millis(750);
-const PLAYBACK_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(1);
+const PLAYBACK_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SpeechRuntimeEvent {
@@ -26,6 +26,9 @@ pub(crate) enum SpeechRuntimeEvent {
     Finished,
     Cancelled,
     Failed,
+    SynthesisFailed,
+    ConversionFailed,
+    PlaybackFailed,
 }
 
 struct SpeechRequest {
@@ -217,44 +220,14 @@ fn speech_loop(
             continue;
         }
         output_active = true;
-        let mut converter = None;
-        let mut playback_started = false;
-        let mut lead_in_pending = was_idle;
-        let result = synthesizer.synthesize(&request.text, &request.cancellation, &mut |chunk| {
-            let converter = match &mut converter {
-                Some(converter) => converter,
-                None => converter.insert(PcmConverter::new(
-                    chunk.format(),
-                    native_format,
-                    AudioLimits::sbc(),
-                )?),
-            };
-            converter.push(&chunk, &request.cancellation, &mut |converted| {
-                write_playback_chunk(
-                    &mut output,
-                    &converted,
-                    &request.cancellation,
-                    &mut lead_in_pending,
-                    &mut playback_started,
-                    context.emit,
-                )
-            })
-        });
-        let result = result.and_then(|()| {
-            if let Some(converter) = &mut converter {
-                converter.finish(&request.cancellation, &mut |converted| {
-                    write_playback_chunk(
-                        &mut output,
-                        &converted,
-                        &request.cancellation,
-                        &mut lead_in_pending,
-                        &mut playback_started,
-                        context.emit,
-                    )
-                })?;
-            }
-            Ok(())
-        });
+        let (result, failure_stage) = synthesize_request(
+            &mut synthesizer,
+            &mut output,
+            native_format,
+            &request,
+            was_idle,
+            context.emit,
+        );
         match result {
             Ok(()) => {}
             Err(error) if error.kind == AudioErrorKind::Cancelled => {
@@ -268,13 +241,90 @@ fn speech_loop(
                 output.stop();
                 output_active = false;
                 context.speaking.store(false, Ordering::Release);
-                (context.emit)(SpeechRuntimeEvent::Failed);
+                (context.emit)(match failure_stage {
+                    Some(SpeechFailureStage::Conversion) => SpeechRuntimeEvent::ConversionFailed,
+                    Some(SpeechFailureStage::Playback) => SpeechRuntimeEvent::PlaybackFailed,
+                    None => SpeechRuntimeEvent::SynthesisFailed,
+                });
             }
         }
     }
     output.stop();
     context.speaking.store(false, Ordering::Release);
     synthesizer.shutdown();
+}
+
+#[derive(Clone, Copy)]
+enum SpeechFailureStage {
+    Conversion,
+    Playback,
+}
+
+fn synthesize_request(
+    synthesizer: &mut PocketTtsSynthesizer,
+    output: &mut CpalOutput,
+    native_format: AudioFormat,
+    request: &SpeechRequest,
+    was_idle: bool,
+    emit: fn(SpeechRuntimeEvent),
+) -> (
+    Result<(), oreo_audio::AudioError>,
+    Option<SpeechFailureStage>,
+) {
+    let mut converter = None;
+    let mut playback_started = false;
+    let mut lead_in_pending = was_idle;
+    let mut failure_stage = None;
+    let result = synthesizer.synthesize(&request.text, &request.cancellation, &mut |chunk| {
+        let converter = match &mut converter {
+            Some(converter) => converter,
+            None => match PcmConverter::new(chunk.format(), native_format, AudioLimits::sbc()) {
+                Ok(created) => converter.insert(created),
+                Err(error) => {
+                    failure_stage = Some(SpeechFailureStage::Conversion);
+                    return Err(error);
+                }
+            },
+        };
+        converter.push(&chunk, &request.cancellation, &mut |converted| {
+            let result = write_playback_chunk(
+                output,
+                &converted,
+                &request.cancellation,
+                &mut lead_in_pending,
+                &mut playback_started,
+                emit,
+            );
+            if result.is_err() {
+                failure_stage = Some(SpeechFailureStage::Playback);
+            }
+            result
+        })
+    });
+    let result = result.and_then(|()| {
+        let Some(converter) = &mut converter else {
+            return Ok(());
+        };
+        if let Err(error) = converter.finish(&request.cancellation, &mut |converted| {
+            let result = write_playback_chunk(
+                output,
+                &converted,
+                &request.cancellation,
+                &mut lead_in_pending,
+                &mut playback_started,
+                emit,
+            );
+            if result.is_err() {
+                failure_stage = Some(SpeechFailureStage::Playback);
+            }
+            result
+        }) {
+            failure_stage.get_or_insert(SpeechFailureStage::Conversion);
+            return Err(error);
+        }
+        Ok(())
+    });
+    (result, failure_stage)
 }
 
 fn initialize_speech(
@@ -388,7 +438,6 @@ fn write_playback_chunk(
     playback_started: &mut bool,
     emit: fn(SpeechRuntimeEvent),
 ) -> Result<(), oreo_audio::AudioError> {
-    let played_before = output.stats().content_samples_played;
     if *lead_in_pending {
         let format = chunk.format();
         let frames = usize::try_from(format.sample_rate_hz)
@@ -397,12 +446,19 @@ fn write_playback_chunk(
             / 1_000;
         let samples = frames.saturating_mul(usize::from(format.channels));
         let silence = oreo_audio::PcmChunk::new(format, vec![0; samples])?;
+        let lead_in_before = output.stats().content_samples_played;
         write_with_backpressure(output, &silence, cancellation)?;
+        wait_for_playback(
+            output,
+            lead_in_before.saturating_add(u64::try_from(samples).unwrap_or(u64::MAX)),
+            cancellation,
+        )?;
         *lead_in_pending = false;
     }
+    let content_before = output.stats().content_samples_played;
     write_with_backpressure(output, chunk, cancellation)?;
     if !*playback_started {
-        wait_for_playback(output, played_before, cancellation)?;
+        wait_for_playback(output, content_before.saturating_add(1), cancellation)?;
         *playback_started = true;
         emit(SpeechRuntimeEvent::Started);
     }
@@ -411,11 +467,11 @@ fn write_playback_chunk(
 
 fn wait_for_playback(
     output: &CpalOutput,
-    played_before: u64,
+    target_samples: u64,
     cancellation: &CancellationToken,
 ) -> Result<(), oreo_audio::AudioError> {
     let deadline = Instant::now() + Duration::from_millis(500);
-    while output.stats().content_samples_played == played_before {
+    while output.stats().content_samples_played < target_samples {
         if cancellation.is_cancelled() {
             return Err(oreo_audio::AudioError::new(
                 AudioErrorKind::Cancelled,

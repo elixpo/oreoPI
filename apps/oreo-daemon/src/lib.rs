@@ -959,6 +959,12 @@ mod unix {
         #[cfg(feature = "voice-agent")]
         SpeechFailed,
         #[cfg(feature = "voice-agent")]
+        SpeechSynthesisFailed,
+        #[cfg(feature = "voice-agent")]
+        SpeechConversionFailed,
+        #[cfg(feature = "voice-agent")]
+        SpeechPlaybackFailed,
+        #[cfg(feature = "voice-agent")]
         SpeechFinished,
         #[cfg(feature = "voice-agent")]
         SpeechGenerating,
@@ -1026,6 +1032,12 @@ mod unix {
                 Self::SpeechCancelled => "speech_cancelled",
                 #[cfg(feature = "voice-agent")]
                 Self::SpeechFailed => "speech_failed",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechSynthesisFailed => "speech_synthesis_failed",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechConversionFailed => "speech_conversion_failed",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechPlaybackFailed => "speech_playback_failed",
                 #[cfg(feature = "voice-agent")]
                 Self::SpeechFinished => "speech_finished",
                 #[cfg(feature = "voice-agent")]
@@ -1133,6 +1145,15 @@ mod unix {
             SpeechRuntimeEvent::Finished => (LogEvent::SpeechFinished, LogOutcome::Succeeded),
             SpeechRuntimeEvent::Cancelled => (LogEvent::SpeechCancelled, LogOutcome::Denied),
             SpeechRuntimeEvent::Failed => (LogEvent::SpeechFailed, LogOutcome::Failed),
+            SpeechRuntimeEvent::SynthesisFailed => {
+                (LogEvent::SpeechSynthesisFailed, LogOutcome::Failed)
+            }
+            SpeechRuntimeEvent::ConversionFailed => {
+                (LogEvent::SpeechConversionFailed, LogOutcome::Failed)
+            }
+            SpeechRuntimeEvent::PlaybackFailed => {
+                (LogEvent::SpeechPlaybackFailed, LogOutcome::Failed)
+            }
         };
         write_log(event, outcome);
     }
