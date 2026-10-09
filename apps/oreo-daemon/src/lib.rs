@@ -2,6 +2,8 @@
 
 #[cfg(all(unix, feature = "voice-agent"))]
 mod agent_runtime;
+#[cfg(all(unix, feature = "voice-agent"))]
+mod speech_runtime;
 
 #[cfg(unix)]
 mod unix {
@@ -22,6 +24,8 @@ mod unix {
     use crate::agent_runtime::{
         AgentRuntimeEvent, VoiceAgentConfig, VoiceAgentIngress, VoiceAgentRuntime,
     };
+    #[cfg(feature = "voice-agent")]
+    use crate::speech_runtime::SpeechRuntimeEvent;
 
     #[cfg(feature = "voice-runtime")]
     use oreo_audio::{
@@ -236,7 +240,8 @@ mod unix {
         let Some(agent_config) = config.agent_config.take() else {
             return Ok(None);
         };
-        let runtime = VoiceAgentRuntime::spawn(agent_config, agent_event).map_err(agent_error)?;
+        let runtime = VoiceAgentRuntime::spawn(agent_config, agent_event, speech_event)
+            .map_err(agent_error)?;
         config.agent_ingress = Some(runtime.ingress());
         Ok(Some(runtime))
     }
@@ -397,6 +402,10 @@ mod unix {
                 }
                 Some(WakePipelineEvent::ClarificationNeeded) => {
                     write_log(LogEvent::VoiceClarificationNeeded, LogOutcome::Denied);
+                    #[cfg(feature = "voice-agent")]
+                    if let Some(agent) = &config.agent_ingress {
+                        let _ = agent.request_clarification();
+                    }
                 }
                 None => {}
             }
@@ -707,6 +716,16 @@ mod unix {
         AgentTurnRejected,
         #[cfg(feature = "voice-agent")]
         AgentTurnStarted,
+        #[cfg(feature = "voice-agent")]
+        SpeechCancelled,
+        #[cfg(feature = "voice-agent")]
+        SpeechFailed,
+        #[cfg(feature = "voice-agent")]
+        SpeechFinished,
+        #[cfg(feature = "voice-agent")]
+        SpeechReady,
+        #[cfg(feature = "voice-agent")]
+        SpeechStarted,
         #[cfg(feature = "voice-runtime")]
         WakeAccepted,
         #[cfg(feature = "voice-runtime")]
@@ -749,6 +768,16 @@ mod unix {
                 Self::AgentTurnRejected => "agent_turn_rejected",
                 #[cfg(feature = "voice-agent")]
                 Self::AgentTurnStarted => "agent_turn_started",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechCancelled => "speech_cancelled",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechFailed => "speech_failed",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechFinished => "speech_finished",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechReady => "speech_ready",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechStarted => "speech_started",
                 #[cfg(feature = "voice-runtime")]
                 Self::WakeAccepted => "wake_accepted",
                 #[cfg(feature = "voice-runtime")]
@@ -809,6 +838,18 @@ mod unix {
             }
             AgentRuntimeEvent::TurnCancelled => (LogEvent::AgentTurnCancelled, LogOutcome::Denied),
             AgentRuntimeEvent::TurnFailed => (LogEvent::AgentTurnFailed, LogOutcome::Failed),
+        };
+        write_log(event, outcome);
+    }
+
+    #[cfg(feature = "voice-agent")]
+    fn speech_event(event: SpeechRuntimeEvent) {
+        let (event, outcome) = match event {
+            SpeechRuntimeEvent::Ready => (LogEvent::SpeechReady, LogOutcome::Succeeded),
+            SpeechRuntimeEvent::Started => (LogEvent::SpeechStarted, LogOutcome::Succeeded),
+            SpeechRuntimeEvent::Finished => (LogEvent::SpeechFinished, LogOutcome::Succeeded),
+            SpeechRuntimeEvent::Cancelled => (LogEvent::SpeechCancelled, LogOutcome::Denied),
+            SpeechRuntimeEvent::Failed => (LogEvent::SpeechFailed, LogOutcome::Failed),
         };
         write_log(event, outcome);
     }

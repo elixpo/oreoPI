@@ -7,11 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::speech_runtime::{SpeechIngress, SpeechRuntime, SpeechRuntimeEvent};
 use oreo_agent::provider::{PollinationsConfig, PollinationsProvider};
 use oreo_agent::{
     AgentEvent, AgentProfile, AgentTurnController, CapabilityRegistry, DenyApprovalUi,
     DeviceStatus, EventSink, OreoAgent, TurnSubmission, VoiceTurnPolicy, register_device_status,
 };
+use oreo_audio::{AudioLimits, SpeechChunker};
+use oreo_core::CancellationToken as SpeechCancellation;
 
 const PERSONA: &str = include_str!("../../../config/persona.md");
 const DEFAULT_MODEL: &str = "openai/gpt-5.4-nano";
@@ -23,6 +26,7 @@ pub(crate) struct VoiceAgentConfig {
     api_key: String,
     model: String,
     session_root: PathBuf,
+    repository_root: PathBuf,
 }
 
 impl VoiceAgentConfig {
@@ -42,6 +46,7 @@ impl VoiceAgentConfig {
             api_key,
             model,
             session_root,
+            repository_root: repository_root.to_path_buf(),
         })
     }
 }
@@ -129,11 +134,13 @@ pub(crate) struct VoiceAgentIngress {
     policy: Arc<VoiceTurnPolicy>,
     wake: SyncSender<()>,
     reset_requested: Arc<AtomicBool>,
+    active_speech: Arc<Mutex<Option<SpeechCancellation>>>,
+    speech: SpeechIngress,
 }
 
 impl VoiceAgentIngress {
     pub(crate) fn submit(&self, transcript: &str) -> Result<TurnSubmission, VoiceAgentError> {
-        let submission = {
+        let mut submission = {
             let mut controller = self
                 .controller
                 .lock()
@@ -143,6 +150,18 @@ impl VoiceAgentIngress {
                 .submit(action, transcript)
                 .map_err(|_| VoiceAgentError::new("voice agent queue rejected the command"))?
         };
+        let was_speaking = self.speech.is_speaking();
+        if let Some(cancellation) = self
+            .active_speech
+            .lock()
+            .map_err(|_| VoiceAgentError::new("speech cancellation failed"))?
+            .as_ref()
+        {
+            self.speech.cancel(cancellation);
+        }
+        if was_speaking {
+            submission = TurnSubmission::InterruptRequested;
+        }
         signal(&self.wake)?;
         Ok(submission)
     }
@@ -153,7 +172,34 @@ impl VoiceAgentIngress {
             .map_err(|_| VoiceAgentError::new("voice agent controller failed"))?
             .cancel_all();
         self.reset_requested.store(true, Ordering::Release);
+        if let Some(cancellation) = self
+            .active_speech
+            .lock()
+            .map_err(|_| VoiceAgentError::new("speech cancellation failed"))?
+            .as_ref()
+        {
+            self.speech.cancel(cancellation);
+        }
         signal(&self.wake)
+    }
+
+    pub(crate) fn request_clarification(&self) -> Result<(), VoiceAgentError> {
+        let cancellation = SpeechCancellation::new();
+        let mut active = self
+            .active_speech
+            .lock()
+            .map_err(|_| VoiceAgentError::new("speech cancellation failed"))?;
+        if let Some(previous) = active.as_ref() {
+            self.speech.cancel(previous);
+        }
+        self.speech
+            .speak(
+                "Were you talking to me? Say Oreo and repeat that if you were.",
+                &cancellation,
+            )
+            .map_err(|_| VoiceAgentError::new("clarification speech failed"))?;
+        *active = Some(cancellation);
+        Ok(())
     }
 }
 
@@ -170,13 +216,18 @@ pub(crate) struct VoiceAgentRuntime {
     ingress: VoiceAgentIngress,
     stopping: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+    speech: Option<SpeechRuntime>,
 }
 
 impl VoiceAgentRuntime {
     pub(crate) fn spawn(
         config: VoiceAgentConfig,
         emit: fn(AgentRuntimeEvent),
+        emit_speech: fn(SpeechRuntimeEvent),
     ) -> Result<Self, VoiceAgentError> {
+        let speech = SpeechRuntime::spawn(&config.repository_root, emit_speech)
+            .map_err(|_| VoiceAgentError::new("speech runtime could not start"))?;
+        let speech_ingress = speech.ingress();
         let provider = Arc::new(
             PollinationsProvider::new(
                 PollinationsConfig::new(config.api_key)
@@ -221,32 +272,38 @@ impl VoiceAgentRuntime {
         );
         let stopping = Arc::new(AtomicBool::new(false));
         let reset_requested = Arc::new(AtomicBool::new(false));
+        let active_speech = Arc::new(Mutex::new(None));
         let (wake, receiver) = mpsc::sync_channel(1);
         let ingress = VoiceAgentIngress {
             controller: controller.clone(),
             policy,
             wake,
             reset_requested: reset_requested.clone(),
+            active_speech: active_speech.clone(),
+            speech: speech_ingress.clone(),
         };
         let worker_stopping = stopping.clone();
+        let loop_context = AgentLoopContext {
+            controller: controller.clone(),
+            receiver,
+            stopping: worker_stopping,
+            reset_requested: reset_requested.clone(),
+            speech: speech_ingress,
+            active_speech: active_speech.clone(),
+            emit,
+            emit_speech,
+        };
         let handle = thread::Builder::new()
             .name("oreo-agent".to_owned())
             .spawn(move || {
-                agent_loop(
-                    &mut agent,
-                    &runtime,
-                    &controller,
-                    &receiver,
-                    &worker_stopping,
-                    &reset_requested,
-                    emit,
-                );
+                agent_loop(&mut agent, &runtime, &loop_context);
             })
             .map_err(|_| VoiceAgentError::new("voice agent thread could not start"))?;
         Ok(Self {
             ingress,
             stopping,
             handle: Some(handle),
+            speech: Some(speech),
         })
     }
 
@@ -266,60 +323,142 @@ impl VoiceAgentRuntime {
             .take()
             .ok_or_else(|| VoiceAgentError::new("voice agent thread is unavailable"))?
             .join()
-            .map_err(|_| VoiceAgentError::new("voice agent thread stopped unexpectedly"))
+            .map_err(|_| VoiceAgentError::new("voice agent thread stopped unexpectedly"))?;
+        self.speech
+            .take()
+            .ok_or_else(|| VoiceAgentError::new("speech runtime is unavailable"))?
+            .shutdown()
+            .map_err(|_| VoiceAgentError::new("speech runtime stopped unexpectedly"))
     }
+}
+
+struct AgentLoopContext {
+    controller: Arc<Mutex<AgentTurnController>>,
+    receiver: Receiver<()>,
+    stopping: Arc<AtomicBool>,
+    reset_requested: Arc<AtomicBool>,
+    speech: SpeechIngress,
+    active_speech: Arc<Mutex<Option<SpeechCancellation>>>,
+    emit: fn(AgentRuntimeEvent),
+    emit_speech: fn(SpeechRuntimeEvent),
 }
 
 fn agent_loop(
     agent: &mut OreoAgent,
     runtime: &tokio::runtime::Runtime,
-    controller: &Arc<Mutex<AgentTurnController>>,
-    receiver: &Receiver<()>,
-    stopping: &AtomicBool,
-    reset_requested: &AtomicBool,
-    emit: fn(AgentRuntimeEvent),
+    context: &AgentLoopContext,
 ) {
-    emit(AgentRuntimeEvent::Ready);
-    while !stopping.load(Ordering::Acquire) {
-        if reset_requested.swap(false, Ordering::AcqRel) {
+    (context.emit)(AgentRuntimeEvent::Ready);
+    while !context.stopping.load(Ordering::Acquire) {
+        if context.reset_requested.swap(false, Ordering::AcqRel) {
             agent.reset_conversation();
         }
-        let turn = if let Ok(mut controller) = controller.lock() {
+        let turn = if let Ok(mut controller) = context.controller.lock() {
             controller.begin_next()
         } else {
-            emit(AgentRuntimeEvent::TurnFailed);
+            (context.emit)(AgentRuntimeEvent::TurnFailed);
             return;
         };
         let Some(turn) = turn else {
-            let _ = receiver.recv_timeout(Duration::from_millis(100));
+            let _ = context.receiver.recv_timeout(Duration::from_millis(100));
             continue;
         };
-        let mut sink = LifecycleSink { emit };
+        let speech_cancellation = SpeechCancellation::new();
+        if let Ok(mut active) = context.active_speech.lock() {
+            if let Some(previous) = active.as_ref() {
+                context.speech.cancel(previous);
+            }
+            *active = Some(speech_cancellation.clone());
+        } else {
+            (context.emit)(AgentRuntimeEvent::TurnFailed);
+            return;
+        }
+        let Ok(mut sink) = LifecycleSink::new(
+            context.emit,
+            context.emit_speech,
+            context.speech.clone(),
+            speech_cancellation.clone(),
+        ) else {
+            (context.emit)(AgentRuntimeEvent::TurnFailed);
+            return;
+        };
         let result = runtime.block_on(agent.ask(turn.message, &turn.cancellation, &mut sink));
-        if let Ok(mut controller) = controller.lock() {
+        if result.is_ok() {
+            sink.finish();
+        } else {
+            speech_cancellation.cancel();
+        }
+        if let Ok(mut controller) = context.controller.lock() {
             let _ = controller.finish_active(&turn.cancellation);
         } else {
-            emit(AgentRuntimeEvent::TurnFailed);
+            (context.emit)(AgentRuntimeEvent::TurnFailed);
             return;
         }
         match result {
-            Ok(_) => emit(AgentRuntimeEvent::TurnCompleted),
+            Ok(_) => (context.emit)(AgentRuntimeEvent::TurnCompleted),
             Err(error) if error.is_cancelled() => {
-                emit(AgentRuntimeEvent::TurnCancelled);
+                (context.emit)(AgentRuntimeEvent::TurnCancelled);
             }
-            Err(_) => emit(AgentRuntimeEvent::TurnFailed),
+            Err(_) => (context.emit)(AgentRuntimeEvent::TurnFailed),
         }
     }
 }
 
 struct LifecycleSink {
     emit: fn(AgentRuntimeEvent),
+    emit_speech: fn(SpeechRuntimeEvent),
+    speech: SpeechIngress,
+    cancellation: SpeechCancellation,
+    chunker: SpeechChunker,
+}
+
+impl LifecycleSink {
+    fn new(
+        emit: fn(AgentRuntimeEvent),
+        emit_speech: fn(SpeechRuntimeEvent),
+        speech: SpeechIngress,
+        cancellation: SpeechCancellation,
+    ) -> Result<Self, ()> {
+        Ok(Self {
+            emit,
+            emit_speech,
+            speech,
+            cancellation,
+            chunker: SpeechChunker::new(AudioLimits::sbc()).map_err(|_| ())?,
+        })
+    }
+
+    fn enqueue(&self, text: &str) {
+        if self.speech.speak(text, &self.cancellation).is_err() {
+            (self.emit_speech)(SpeechRuntimeEvent::Failed);
+        }
+    }
+
+    fn finish(&mut self) {
+        if let Some(chunk) = self.chunker.finish() {
+            self.enqueue(&chunk);
+        }
+    }
 }
 
 impl EventSink for LifecycleSink {
     fn emit(&mut self, event: AgentEvent) {
-        if event == AgentEvent::Started {
-            (self.emit)(AgentRuntimeEvent::TurnStarted);
+        match event {
+            AgentEvent::Started => (self.emit)(AgentRuntimeEvent::TurnStarted),
+            AgentEvent::TextDelta(delta) => {
+                if let Ok(chunks) = self.chunker.push(&delta) {
+                    for chunk in chunks {
+                        self.enqueue(&chunk);
+                    }
+                } else {
+                    self.cancellation.cancel();
+                    (self.emit_speech)(SpeechRuntimeEvent::Failed);
+                }
+            }
+            AgentEvent::ToolRequested { .. }
+            | AgentEvent::ToolFinished { .. }
+            | AgentEvent::Usage(_)
+            | AgentEvent::Completed => {}
         }
     }
 }

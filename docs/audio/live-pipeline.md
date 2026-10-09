@@ -108,8 +108,8 @@ Cold attention is a three-way local decision. Direct address proceeds, reported
 or third-person mentions such as “I am speaking to Oreo” remain silent, and a
 narrow ambiguous score emits `voice_clarification_needed` without entering the
 agent queue. The reviewed mention examples live beside the wake corpus. Pocket
-TTS will turn that event into a fixed local “Were you talking to me?” prompt;
-the ambiguity itself never causes a Pollinations request.
+TTS turns that event into a fixed local “Were you talking to me?” prompt; the
+ambiguity itself never causes a Pollinations request.
 
 The maximum utterance remains 30 seconds. Rejected cold candidates use a 500 ms
 reset cooldown to prevent one utterance from triggering twice. A bounded
@@ -143,9 +143,11 @@ logs. Session closure emits `voice_conversation_ended`. Stop the daemon from
 another terminal with `cargo run -p elixpo-cli -- daemon stop`.
 
 With `voice-agent`, commands enter a bounded eight-message controller on a
-separate network thread. A normal utterance during an active response steers and
-cancels that turn. Leading cues in `config/voice-steering-cues.tsv` can queue or
-replace work. The agent retains at most four completed conversation turns and
-requests at most 256 output tokens. Logs expose only fixed lifecycle events;
-transcripts, response text, tool payloads, and credentials are excluded. The
-next layer consumes transient response deltas with Pocket TTS.
+separate network thread. Response deltas are split at natural sentence
+boundaries and sent immediately to the prewarmed Pocket TTS worker, so playback
+starts before the model completes its full answer. A new accepted utterance
+cancels queued and active speech before it steers or chains the agent. Leading
+cues in `config/voice-steering-cues.tsv` can queue or replace work. The agent
+retains at most four completed conversation turns and requests at most 256
+output tokens. Speech, agent, and cancellation logs expose only fixed lifecycle
+events; transcripts, response text, tool payloads, and credentials are excluded.

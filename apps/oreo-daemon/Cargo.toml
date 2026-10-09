@@ -8,7 +8,12 @@ license-file.workspace = true
 [features]
 default = []
 voice-runtime = ["dep:oreo-audio", "dep:oreo-core", "oreo-audio/voice-runtime"]
-voice-agent = ["voice-runtime", "dep:oreo-agent", "dep:tokio"]
+voice-agent = [
+    "voice-runtime",
+    "dep:oreo-agent",
+    "dep:tokio",
+    "oreo-audio/pocket-tts",
+]
 
 [dependencies]
 oreo-audio = { path = "../../crates/oreo-audio", optional = true }
