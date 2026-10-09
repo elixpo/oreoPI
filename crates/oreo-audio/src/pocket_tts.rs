@@ -27,6 +27,8 @@ pub struct PocketTtsConfig {
     pub cache_directory: PathBuf,
     pub idle_timeout: Duration,
     pub startup_timeout: Duration,
+    pub first_audio_timeout: Duration,
+    pub request_timeout: Duration,
 }
 
 impl PocketTtsConfig {
@@ -39,6 +41,8 @@ impl PocketTtsConfig {
             cache_directory: root.join("models/cache/huggingface"),
             idle_timeout: Duration::from_mins(1),
             startup_timeout: Duration::from_secs(30),
+            first_audio_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(30),
         }
     }
 
@@ -48,6 +52,9 @@ impl PocketTtsConfig {
             || !self.cache_directory.is_dir()
             || !(Duration::from_secs(5)..=Duration::from_hours(1)).contains(&self.idle_timeout)
             || !(Duration::from_secs(1)..=Duration::from_mins(5)).contains(&self.startup_timeout)
+            || !(Duration::from_millis(100)..=Duration::from_mins(1))
+                .contains(&self.first_audio_timeout)
+            || !(self.first_audio_timeout..=Duration::from_mins(5)).contains(&self.request_timeout)
         {
             return Err(AudioError::new(
                 AudioErrorKind::InvalidConfig,
@@ -205,6 +212,28 @@ impl StreamingSynthesizer for PocketTtsSynthesizer {
                 "speech text is empty or too large",
             ));
         }
+        let mut emitted_audio = false;
+        let first = self.synthesize_once(text, cancellation, emit, &mut emitted_audio);
+        match first {
+            Ok(()) => return Ok(()),
+            Err(error) if emitted_audio || error.kind != AudioErrorKind::Backend => {
+                return Err(error);
+            }
+            Err(_) => {}
+        }
+        emitted_audio = false;
+        self.synthesize_once(text, cancellation, emit, &mut emitted_audio)
+    }
+}
+
+impl PocketTtsSynthesizer {
+    fn synthesize_once(
+        &mut self,
+        text: &str,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(PcmChunk) -> Result<(), AudioError>,
+        emitted_audio: &mut bool,
+    ) -> Result<(), AudioError> {
         if cancellation.is_cancelled() {
             return Err(cancelled());
         }
@@ -219,13 +248,23 @@ impl StreamingSynthesizer for PocketTtsSynthesizer {
             return Err(backend_error());
         }
 
+        let started = Instant::now();
+        let first_audio_deadline = started + self.config.first_audio_timeout;
+        let request_deadline = started + self.config.request_timeout;
         loop {
             if cancellation.is_cancelled() {
                 self.stop_worker();
                 return Err(cancelled());
             }
+            if Instant::now() >= request_deadline
+                || (!*emitted_audio && Instant::now() >= first_audio_deadline)
+            {
+                self.stop_worker();
+                return Err(backend_error());
+            }
             match self.worker_frame() {
                 Ok(Some(WorkerFrame::Audio(samples))) => {
+                    *emitted_audio = true;
                     let chunk = PcmChunk::new(TTS_FORMAT, samples)?;
                     if let Err(error) = emit(chunk) {
                         self.stop_worker();
@@ -393,6 +432,8 @@ while True:
             cache_directory: cache,
             idle_timeout: Duration::from_secs(5),
             startup_timeout: Duration::from_secs(2),
+            first_audio_timeout: Duration::from_secs(1),
+            request_timeout: Duration::from_secs(2),
         };
         let mut synthesizer =
             PocketTtsSynthesizer::new(config, AudioLimits::sbc()).expect("adapter starts lazily");
@@ -413,6 +454,57 @@ while True:
     }
 
     #[test]
+    fn stalled_first_audio_restarts_worker_once() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let cache = temporary.path().join("cache");
+        fs::create_dir(&cache).expect("cache directory");
+        let script = temporary.path().join("retry-worker.py");
+        fs::write(
+            &script,
+            r"import os, struct, sys, time
+out = sys.stdout.buffer
+source = sys.stdin.buffer
+def frame(kind, payload=b''):
+    out.write(bytes([kind]) + struct.pack('>I', len(payload)) + payload)
+    out.flush()
+frame(1, struct.pack('>I', 24000))
+header = source.read(4)
+size = struct.unpack('>I', header)[0]
+source.read(size)
+marker = os.path.join(os.environ['HF_HOME'], 'retry-marker')
+if not os.path.exists(marker):
+    open(marker, 'wb').close()
+    time.sleep(2)
+else:
+    frame(2, struct.pack('<hhhh', 5, 6, 7, 8))
+    frame(3)
+",
+        )
+        .expect("fake worker script");
+        let python = std::env::var_os("PYTHON")
+            .map_or_else(|| PathBuf::from("/usr/bin/python3"), PathBuf::from);
+        let config = PocketTtsConfig {
+            python,
+            worker_script: script,
+            cache_directory: cache,
+            idle_timeout: Duration::from_secs(5),
+            startup_timeout: Duration::from_secs(2),
+            first_audio_timeout: Duration::from_millis(100),
+            request_timeout: Duration::from_secs(2),
+        };
+        let mut synthesizer =
+            PocketTtsSynthesizer::new(config, AudioLimits::sbc()).expect("adapter starts lazily");
+        let mut received = Vec::new();
+        synthesizer
+            .synthesize("Retry me.", &CancellationToken::new(), &mut |chunk| {
+                received.extend_from_slice(chunk.samples());
+                Ok(())
+            })
+            .expect("second worker streams speech");
+        assert_eq!(received, [5, 6, 7, 8]);
+    }
+
+    #[test]
     fn pre_cancelled_request_does_not_start_worker() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let cache = temporary.path().join("cache");
@@ -425,6 +517,8 @@ while True:
             cache_directory: cache,
             idle_timeout: Duration::from_secs(5),
             startup_timeout: Duration::from_secs(1),
+            first_audio_timeout: Duration::from_secs(1),
+            request_timeout: Duration::from_secs(2),
         };
         let mut synthesizer =
             PocketTtsSynthesizer::new(config, AudioLimits::sbc()).expect("adapter starts lazily");
