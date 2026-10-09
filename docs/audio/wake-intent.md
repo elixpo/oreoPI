@@ -1,16 +1,15 @@
 # Contextual Oreo wake pipeline
 
-Date: 2026-10-04
+Date: 2026-10-09
 
 ## Candidate architecture
 
 The laptop candidate uses a four-stage local cascade:
 
-1. sherpa-onnx's English-only 3.3M open-vocabulary KWS candidate listens only
-   for the configurable assistant identity, `Oreo`. It uses BPE subwords and
-   does not contain a list of greeting or command phrases. Its token file can
-   be regenerated without retraining the acoustic model. The earlier bilingual
-   phone candidate remains available only for reproducible comparison.
+1. The current openWakeWord context-v2 candidate listens only for the assistant
+   identity, `Oreo`. It is deliberately permissive and does not contain a list
+   of greeting or command phrases. The rejected sherpa candidates remain only
+   for reproducible comparison.
 2. `WakeAudioWindow` retains only the most recent one to three seconds of
    16 kHz mono PCM. It drops old samples, rejects format changes, and clears on
    cancellation. It does not persist background audio.
@@ -22,12 +21,16 @@ The laptop candidate uses a four-stage local cascade:
    canonicalized from the reviewed `config/wake-identity-aliases.txt` data only
    after KWS fires. The surrounding learned context then distinguishes direct
    address from Oreo product mentions, ordinary uses of “audio,” and
-   near-sounding words such as “stereo.”
+   near-sounding words such as “stereo.” A transcript containing a reviewed
+   identity rendering uses the normal intent threshold. When Vosk loses the
+   name, the contextual score must pass a separate, much stronger threshold;
+   generic dialogue is never accepted merely because it sounds like direct
+   address.
 
 Both sherpa candidates missed natural Oreo recordings after threshold and
-boost tuning. The next candidate is a corpus-trained openWakeWord model behind
-an isolated worker; see `docs/audio/openwakeword.md`. No wake engine is selected
-until the recorded benchmark and background soak pass.
+boost tuning. The corpus-trained openWakeWord model is the current candidate;
+see `docs/audio/openwakeword.md`. No wake engine is selected until the recorded
+benchmark and background soak pass.
 
 ## Privacy and resource bounds
 

@@ -5,7 +5,8 @@ use oreo_core::CancellationToken;
 use crate::{AudioError, AudioErrorKind, AudioFormat, PcmChunk, STT_FORMAT};
 
 const MAX_WAKE_TEXT_BYTES: usize = 512;
-const WAKE_INTENT_THRESHOLD: f64 = 1.0;
+const IDENTITY_INTENT_THRESHOLD: f64 = 1.0;
+const CONTEXT_ONLY_INTENT_THRESHOLD: f64 = 5.0;
 const EMBEDDED_CORPUS: &str = include_str!("../../../config/wake-intent-corpus.tsv");
 const EMBEDDED_ALIASES: &str = include_str!("../../../config/wake-identity-aliases.txt");
 
@@ -87,6 +88,7 @@ impl WakeAudioWindow {
 pub struct WakeIntentDecision {
     pub addressed: bool,
     pub score: f64,
+    pub identity_present: bool,
 }
 
 /// Tiny Bernoulli Naive Bayes classifier trained from the reviewed corpus.
@@ -169,6 +171,9 @@ impl WakeIntentClassifier {
         for (class, score) in scores.iter_mut().enumerate() {
             *score = ((f64::from(self.document_totals[class]) + 1.0) / (documents + 2.0)).ln();
         }
+        let identity_present = lexical_words(transcript)
+            .iter()
+            .any(|word| self.aliases.contains(word));
         let transcript_features: HashSet<_> =
             features(transcript, &self.aliases).into_iter().collect();
         for feature in transcript_features {
@@ -182,30 +187,24 @@ impl WakeIntentClassifier {
             }
         }
         let score = scores[1] - scores[0];
+        let threshold = if identity_present {
+            IDENTITY_INTENT_THRESHOLD
+        } else {
+            CONTEXT_ONLY_INTENT_THRESHOLD
+        };
         Ok(WakeIntentDecision {
-            addressed: score >= WAKE_INTENT_THRESHOLD,
+            addressed: score >= threshold,
             score,
+            identity_present,
         })
     }
 }
 
 fn features(text: &str, aliases: &HashSet<String>) -> Vec<String> {
-    let lexical: String = text
-        .chars()
-        .flat_map(char::to_lowercase)
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let lexical = lexical_words(text);
     let words: Vec<&str> = lexical
-        .split_whitespace()
+        .iter()
+        .map(String::as_str)
         .map(|word| {
             if aliases.contains(word) {
                 "assistantname"
@@ -228,6 +227,22 @@ fn features(text: &str, aliases: &HashSet<String>) -> Vec<String> {
         output.push(format!("b:{}_{}", pair[0], pair[1]));
     }
     output
+}
+
+fn lexical_words(text: &str) -> Vec<String> {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn classifier_error() -> AudioError {
@@ -331,6 +346,28 @@ mod tests {
                 decision.score
             );
         }
+    }
+
+    #[test]
+    fn embedded_classifier_requires_identity_or_strong_context() {
+        let classifier = WakeIntentClassifier::embedded().expect("classifier trains");
+        let generic = classifier
+            .classify("don't you hear me shut the door")
+            .expect("phrase scores");
+        assert!(!generic.addressed);
+        assert!(!generic.identity_present);
+
+        let recovered = classifier
+            .classify("can you hear me all you")
+            .expect("phrase scores");
+        assert!(recovered.addressed);
+        assert!(!recovered.identity_present);
+
+        let named = classifier
+            .classify("wake up ordeal")
+            .expect("phrase scores");
+        assert!(named.addressed);
+        assert!(named.identity_present);
     }
 
     #[test]

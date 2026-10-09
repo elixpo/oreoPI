@@ -195,6 +195,16 @@ the report. Candidate rate measures Vosk/CPU pressure; accepted false
 activations determine the user-visible gate. The candidate must record zero
 accepted activations in this speech-heavy hour before a longer corpus run.
 
+The first run at the original single intent threshold produced 229 acoustic
+candidates and 40 accepted false activations. None of the 229 Vosk transcripts
+contained a reviewed Oreo identity alias: ordinary audiobook dialogue was being
+accepted solely because it resembled direct address. The intent gate therefore
+uses two confidence levels. A transcript with an identity alias retains the
+reviewed `1.0` threshold; a transcript where Vosk lost the identity must reach
+`5.0`. Replaying all 229 held-out transcripts through that rule yields zero
+accepted activations, while the 12-fixture cascade remains 36/36 correct. A new
+full soak report is still required before promotion.
+
 This reproducible test replaces the laptop-room recording, not the final device
 acceptance test. Once Oreo moves to its SBC and microphone enclosure, it still
 needs an on-device ambient soak because microphone gain, echo, room acoustics,

@@ -140,6 +140,7 @@ def run(arguments: argparse.Namespace) -> dict[str, object]:
         addressed, intent_score = (
             classifier.classify(transcript) if transcript else (False, None)
         )
+        identity_present = classifier.has_identity(transcript) if transcript else False
         event_latencies.append((time.perf_counter() - started) * 1000)
         events.append(
             {
@@ -147,6 +148,7 @@ def run(arguments: argparse.Namespace) -> dict[str, object]:
                 "keyword": candidate["keyword"],
                 "candidate_score": candidate["score"],
                 "transcript": transcript,
+                "identity_present": identity_present,
                 "intent_score": intent_score,
                 "accepted": addressed,
             }
@@ -210,6 +212,8 @@ def run(arguments: argparse.Namespace) -> dict[str, object]:
             "ring_seconds": RING_SECONDS,
             "post_roll_seconds": POST_ROLL_FRAMES / SAMPLE_RATE,
             "cooldown_seconds": COOLDOWN_FRAMES / SAMPLE_RATE,
+            "intent_threshold_with_identity": common.IDENTITY_INTENT_THRESHOLD,
+            "intent_threshold_without_identity": common.CONTEXT_ONLY_INTENT_THRESHOLD,
         },
         "packages": versions,
         "platform": {

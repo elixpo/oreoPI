@@ -28,7 +28,8 @@ RING_SECONDS = 3
 MAX_FIXTURE_SECONDS = 15
 MAX_FIXTURES = 64
 MAX_TRANSCRIPT_BYTES = 512
-INTENT_THRESHOLD = 1.0
+IDENTITY_INTENT_THRESHOLD = 1.0
+CONTEXT_ONLY_INTENT_THRESHOLD = 5.0
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,15 @@ class IntentClassifier:
                     / (self.document_totals[category] + 2)
                 )
         score = scores[1] - scores[0]
-        return score >= INTENT_THRESHOLD, score
+        threshold = (
+            IDENTITY_INTENT_THRESHOLD
+            if self.has_identity(transcript)
+            else CONTEXT_ONLY_INTENT_THRESHOLD
+        )
+        return score >= threshold, score
+
+    def has_identity(self, transcript: str) -> bool:
+        return bool(set(re.findall(r"[a-z0-9]+", transcript.casefold())) & self.aliases)
 
 
 def features(text: str, aliases: set[str]) -> list[str]:
@@ -559,7 +568,8 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
                 if arguments.kws_engine == "sherpa"
                 else arguments.openwakeword_threshold
             ),
-            "intent_threshold": INTENT_THRESHOLD,
+            "intent_threshold_with_identity": IDENTITY_INTENT_THRESHOLD,
+            "intent_threshold_without_identity": CONTEXT_ONLY_INTENT_THRESHOLD,
         },
         "platform": {
             "machine": platform.machine(),
@@ -603,6 +613,12 @@ def self_test() -> None:
         assert actual == expected, fields[2]
         tested += 1
     assert tested >= 10
+    generic, generic_score = classifier.classify("don't you hear me shut the door")
+    assert not generic and generic_score < CONTEXT_ONLY_INTENT_THRESHOLD
+    recovered, recovered_score = classifier.classify("can you hear me all you")
+    assert recovered and recovered_score >= CONTEXT_ONLY_INTENT_THRESHOLD
+    named, _ = classifier.classify("wake up ordeal")
+    assert named and classifier.has_identity("wake up ordeal")
     assert percentile([4.0, 1.0, 3.0, 2.0], 0.95) == 4.0
     ring = bytearray()
     append_ring(ring, b"a" * (RING_SECONDS * SAMPLE_RATE * 2))
