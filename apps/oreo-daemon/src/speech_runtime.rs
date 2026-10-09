@@ -16,6 +16,7 @@ use oreo_core::CancellationToken;
 const SPEECH_QUEUE_CAPACITY: usize = 16;
 const ECHO_REFERENCE_CAPACITY: usize = 8;
 const ECHO_TAIL: Duration = Duration::from_millis(750);
+const PLAYBACK_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SpeechRuntimeEvent {
@@ -202,6 +203,14 @@ fn speech_loop(
             continue;
         }
         let was_idle = !context.speaking.swap(true, Ordering::AcqRel);
+        // Reopen the device between complete responses. Some ALSA devices keep
+        // an apparently live CPAL stream after draining while no longer
+        // consuming the next response, which previously left the worker stuck
+        // after `speech_generating` with no `speech_started` event.
+        if was_idle && output_active {
+            output.stop();
+            output_active = false;
+        }
         (context.emit)(SpeechRuntimeEvent::Generating);
         if !output_active && output.begin(native_format).is_err() {
             (context.emit)(SpeechRuntimeEvent::Failed);
@@ -353,10 +362,17 @@ fn write_with_backpressure(
     chunk: &oreo_audio::PcmChunk,
     cancellation: &CancellationToken,
 ) -> Result<(), oreo_audio::AudioError> {
+    let deadline = Instant::now() + PLAYBACK_BACKPRESSURE_TIMEOUT;
     loop {
         match output.write(chunk, cancellation) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind == AudioErrorKind::Capacity => {
+                if Instant::now() >= deadline {
+                    return Err(oreo_audio::AudioError::new(
+                        AudioErrorKind::Backend,
+                        "speaker backpressure did not recover",
+                    ));
+                }
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(error),
