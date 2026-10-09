@@ -10,7 +10,7 @@ and checksummed separately from application packages.
 | Layer | Primary candidate | Fallback | Benchmark focus |
 |---|---|---|---|
 | Capture/playback | [CPAL 0.18.2](https://github.com/RustAudio/cpal/releases/tag/v0.18.2), selected | Direct ALSA adapter only if CPAL measurements require it | PipeWire/PulseAudio/ALSA behavior, callback overruns, fixed-buffer latency, AMD64/ARM64 packaging |
-| Offline STT | [Moonshine Voice 0.1.5](https://github.com/moonshine-ai/moonshine) Small Streaming, selected for laptop integration | Vosk 0.3.45 remains the working runtime until the streaming adapter lands; sherpa-onnx 20M remains the resource fallback | Accuracy on Oreo command and natural-speech fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
+| Offline STT | [Moonshine Voice 0.1.5](https://github.com/moonshine-ai/moonshine) Small Streaming, selected laptop runtime | Vosk 0.3.45 is the explicit legacy fallback; sherpa-onnx 20M remains the resource fallback | Accuracy on Oreo command and natural-speech fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
 | Streaming TTS | PocketTTS 3.3.0 Python reference, selected for the laptop profile behind an isolated worker | sherpa-onnx PocketTTS remains an ARM/runtime experiment; Kitten Nano rejected | First-audio latency, real-time factor, RSS, cancellation, pronunciation, voice/model licensing, AMD64/ARM64 packaging |
 
 ## Selection rules
@@ -35,13 +35,13 @@ rather than assumed. PocketTTS source is MIT. The gated model and selected
 Alba MacKenna voice are CC BY 4.0 and pinned independently in the model
 manifest; product attribution must cover both artefacts.
 
-Moonshine Small Streaming is now the selected accuracy-first laptop STT,
-but not yet the daemon default. Upstream publishes it as a 123M-parameter English
+Moonshine Small Streaming is now the selected accuracy-first laptop STT and
+daemon default. Upstream publishes it as a 123M-parameter English
 streaming model with 7.84% average WER across the Open ASR Leaderboard's eight
 datasets. Oreo pins the 0.1.5 runtime and quantized 2026-08-21 model catalogue
-entry in a repository-local cache. It must beat Vosk on Oreo's own recordings
-and pass streaming latency, interruption, RSS, long-run, and AArch64 gates
-before the Vosk runtime is removed or a hardware image is approved.
+entry in a repository-local cache. The daemon keeps it alive behind a bounded
+binary worker protocol. Live interruption, RSS, long-run, and AArch64 gates
+remain before the Vosk fallback is removed or a hardware image is approved.
 
 The first TTS pass uses the six-layer default English model, not the larger
 24-layer variant. Dynamic int8 is enabled because upstream reports lower CPU

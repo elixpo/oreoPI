@@ -28,10 +28,12 @@ mod unix {
     #[cfg(feature = "voice-agent")]
     use crate::speech_runtime::SpeechRuntimeEvent;
 
+    #[cfg(feature = "voice-agent")]
+    use oreo_audio::ConversationAudioPhase;
     #[cfg(feature = "voice-runtime")]
     use oreo_audio::{
-        AmbientVoicePipeline, AudioLimits, AudioSource, ConversationAudioPhase, ConvertingSource,
-        CpalInputSource, STT_FORMAT, VoskTranscriber, WakePipelineEvent,
+        AmbientVoicePipeline, AudioLimits, AudioSource, ConvertingSource, CpalInputSource,
+        MoonshineSttConfig, MoonshineTranscriber, STT_FORMAT, WakePipelineEvent,
     };
     #[cfg(feature = "voice-runtime")]
     use oreo_core::CancellationToken;
@@ -344,10 +346,8 @@ mod unix {
     fn voice_session(shared: &Arc<SharedState>, config: &VoiceConfig) -> Result<(), DaemonError> {
         let limits = AudioLimits::sbc();
         let cancellation = CancellationToken::new();
-        let transcriber = VoskTranscriber::load(
-            config
-                .repository_root
-                .join("models/cache/vosk-model-small-en-us-0.15"),
+        let transcriber = MoonshineTranscriber::load(
+            MoonshineSttConfig::for_repository(&config.repository_root),
             limits,
         )
         .map_err(voice_error)?;
@@ -358,7 +358,8 @@ mod unix {
         let mut source = ConvertingSource::new(input, STT_FORMAT, limits).map_err(voice_error)?;
         write_log(LogEvent::VoiceListening, LogOutcome::Succeeded);
         #[cfg(feature = "voice-agent")]
-        let (mut last_phase, mut barge_checks) = (ConversationPhase::Listening, 0_u8);
+        let mut last_phase = ConversationPhase::Listening;
+        let mut barge_checks = 0_u8;
         let mut last_debug_partial = String::new();
         if config.debug_transcripts {
             write_debug_event("transcript_debug_enabled", None);
@@ -443,6 +444,8 @@ mod unix {
 
     #[cfg(feature = "voice-runtime")]
     fn handle_voice_command(config: &VoiceConfig, transcript: &str) -> Result<(), DaemonError> {
+        #[cfg(not(feature = "voice-agent"))]
+        let _ = config;
         if transcript.trim().is_empty() {
             return Err(DaemonError::new(
                 DaemonErrorKind::Voice,

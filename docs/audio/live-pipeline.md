@@ -74,18 +74,19 @@ free-conversation recognizer with a restrictive command grammar.
 The laptop-selected daemon path is:
 
 ```text
-CPAL -> bounded 16 kHz conversion -> continuously reused Vosk recognizer
+CPAL -> bounded 16 kHz conversion -> persistent Moonshine streaming worker
      -> local contextual attention gate -> accepted turn only
      -> 30-second contextual conversation window
 ```
 
 The daemon continuously segments locally decoded speech at a conservative
-600 ms natural-silence endpoint. Vosk is loaded once and reused; each utterance
-is capped at 30 seconds. A grammar-biased attention decoder shares that same
-loaded model and can recover a high-confidence attention-name hit omitted by
-the general transcript. A tiny local contextual model still decides whether
-the complete phrase is directed at the assistant before any transcript can
-enter the Pollinations agent queue. Raw PCM is never persisted.
+600 ms natural-silence endpoint. Moonshine Small Streaming is loaded once in
+an isolated local worker and reused; each utterance is capped at 30 seconds.
+Its configurable key-term bias improves the selected attention name without
+restricting recognition to a command grammar. A tiny local contextual model
+still decides whether the complete phrase is directed at the assistant before
+any transcript can enter the Pollinations agent queue. Raw PCM is never
+persisted.
 
 `Orion` (`oh-RYE-un`) is the default acoustic attention name for the Oreo
 persona because its syllables are substantially clearer to the small English
@@ -124,7 +125,7 @@ corrections, and acknowledgements from television, hallway speech, and other
 room conversation before anything enters the agent queue. Its reviewed corpus
 is `config/conversation-intent-corpus.tsv`; it performs no network request.
 
-An engaged VAD event that produces no Vosk text is treated as ambient noise. It
+An engaged VAD event that produces no Moonshine text is treated as ambient noise. It
 returns to the remaining conversation window without emitting a command timeout
 or resetting the session.
 
@@ -134,7 +135,7 @@ Orion” remain silent. Warm speech still passes through the separate local turn
 classifier, so merely leaving the microphone open does not forward room audio.
 
 On a single laptop microphone, “nearest voice” means the dominant, clearly
-decoded utterance after energy and Vosk-confidence filtering. True speaker
+decoded utterance after energy and contextual filtering. True speaker
 direction or physical proximity cannot be inferred from mono PCM; that will be
 added behind the same gate when the target SBC has a microphone array.
 
@@ -148,8 +149,6 @@ For transcription-only validation, run the daemon from the repository root:
 ```bash
 rtk env OREO_VOICE_ENABLED=1 OREO_REPO_ROOT="$PWD" \
   OREO_ATTENTION_NAME=orion \
-  OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
-  LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   cargo run -p oreo-daemon --features voice-runtime
 ```
 
@@ -161,8 +160,6 @@ executing the file; process environment values take precedence. Then run:
 ```bash
 rtk env OREO_VOICE_ENABLED=1 OREO_AGENT_ENABLED=1 OREO_REPO_ROOT="$PWD" \
   OREO_ATTENTION_NAME=orion \
-  OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
-  LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
   cargo run -p oreo-daemon --features voice-agent
 ```
 

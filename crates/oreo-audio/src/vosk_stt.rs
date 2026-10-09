@@ -5,8 +5,8 @@ use oreo_core::CancellationToken;
 use vosk::{CompleteResult, DecodingState, LogLevel, Model, Recognizer};
 
 use crate::{
-    AudioError, AudioErrorKind, AudioFormat, AudioLimits, PcmChunk, STT_FORMAT,
-    StreamingTranscriber,
+    AmbientTranscriber, AudioError, AudioErrorKind, AudioFormat, AudioLimits, PcmChunk, STT_FORMAT,
+    StreamingTranscriber, TranscriptionConfidence,
 };
 
 /// Bounded Vosk adapter for push-to-talk utterances.
@@ -381,6 +381,28 @@ impl StreamingTranscriber for VoskTranscriber {
             return Err(error);
         }
         Ok(std::mem::take(&mut self.transcript))
+    }
+}
+
+impl AmbientTranscriber for VoskTranscriber {
+    fn configure_attention_spotter(&mut self, name: &str) -> Result<(), AudioError> {
+        Self::configure_attention_spotter(self, name)
+    }
+
+    fn live_transcript(&mut self) -> Result<String, AudioError> {
+        Self::live_transcript(self)
+    }
+
+    fn confidence(&self) -> Option<TranscriptionConfidence> {
+        Self::confidence(self).map(|confidence| TranscriptionConfidence {
+            mean: confidence.mean,
+            minimum: confidence.minimum,
+            words: confidence.words,
+        })
+    }
+
+    fn attention_detected(&self) -> bool {
+        Self::attention_detected(self)
     }
 }
 

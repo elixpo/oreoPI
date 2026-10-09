@@ -1,9 +1,9 @@
 use oreo_core::CancellationToken;
 
 use crate::{
-    AmbientAttentionDecision, AmbientAttentionGate, AudioError, AudioErrorKind, AudioLimits,
-    ConversationAudioPhase, EnergyVad, PcmChunk, STT_FORMAT, StreamingTranscriber, VadConfig,
-    VadDecision, VoskTranscriber, WakePipelineEvent,
+    AmbientAttentionDecision, AmbientAttentionGate, AmbientTranscriber, AudioError, AudioErrorKind,
+    AudioLimits, ConversationAudioPhase, EnergyVad, PcmChunk, STT_FORMAT, VadConfig, VadDecision,
+    WakePipelineEvent,
 };
 
 const CONVERSATION_WINDOW_SAMPLES: usize = 30 * 16_000;
@@ -11,10 +11,10 @@ const MIN_TRANSCRIPT_CONFIDENCE: f32 = 0.35;
 
 /// Continuous, fully local speech segmentation and contextual attention gate.
 ///
-/// The Vosk model is reused across utterances. A completed transcript can only
+/// The local STT model is reused across utterances. A completed transcript can only
 /// leave this component after the local attention model accepts it.
 pub struct AmbientVoicePipeline {
-    transcriber: VoskTranscriber,
+    transcriber: Box<dyn AmbientTranscriber>,
     attention: AmbientAttentionGate,
     attention_name: String,
     vad: EnergyVad,
@@ -38,7 +38,7 @@ impl AmbientVoicePipeline {
     ///
     /// Rejects invalid bounds, attention names, or embedded classifiers.
     pub fn new(
-        mut transcriber: VoskTranscriber,
+        transcriber: impl AmbientTranscriber + 'static,
         limits: AudioLimits,
         attention_name: &str,
     ) -> Result<Self, AudioError> {
@@ -51,6 +51,7 @@ impl AmbientVoicePipeline {
                     "ambient capture limit is invalid",
                 )
             })?;
+        let mut transcriber: Box<dyn AmbientTranscriber> = Box::new(transcriber);
         transcriber.configure_attention_spotter(attention_name)?;
         transcriber.begin(STT_FORMAT)?;
         Ok(Self {

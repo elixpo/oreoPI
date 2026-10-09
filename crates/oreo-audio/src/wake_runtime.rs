@@ -1,41 +1,15 @@
 use oreo_core::CancellationToken;
 
 use crate::{
-    AudioError, AudioErrorKind, AudioLimits, ConversationDirective, ConversationLanguage,
-    EnergyVad, OpenWakeWordDetector, PcmChunk, STT_FORMAT, StreamingTranscriber, VadConfig,
-    VadDecision, VoskTranscriber, WakeAudioWindow, WakeIntentClassifier, WakeIntentDisposition,
-    WarmTurnClassifier,
+    AudioError, AudioErrorKind, AudioLimits, ConversationAudioPhase, ConversationDirective,
+    ConversationLanguage, EnergyVad, OpenWakeWordDetector, PcmChunk, STT_FORMAT,
+    StreamingTranscriber, VadConfig, VadDecision, VoskTranscriber, WakeAudioWindow,
+    WakeIntentClassifier, WakeIntentDisposition, WakePipelineEvent, WarmTurnClassifier,
 };
 
 const COOLDOWN_SAMPLES: usize = 8_000;
 const COMMAND_START_TIMEOUT_SAMPLES: usize = 5 * 16_000;
 const CONVERSATION_WINDOW_SAMPLES: usize = 30 * 16_000;
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum WakePipelineEvent {
-    WakeAccepted {
-        score: f32,
-    },
-    CommandReady {
-        transcript: String,
-    },
-    CommandTimedOut,
-    ConversationEnded,
-    ClarificationNeeded,
-    /// A non-trivial live utterance was heard while Oreo was speaking. The
-    /// daemon compares it with the private playback reference before ducking
-    /// output; the partial text is never logged or persisted.
-    PossibleBargeIn {
-        transcript: String,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConversationAudioPhase {
-    Listening,
-    Thinking,
-    Speaking,
-}
 
 enum RuntimeState {
     Listening,

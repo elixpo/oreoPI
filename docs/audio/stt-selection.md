@@ -62,9 +62,10 @@ WER into an Oreo-specific selection without local evidence.
 The identical-fixture benchmark is now complete. Moonshine returned zero word
 errors across 85 reference-word measurements (three fixtures, five repetitions)
 with stable output, 744 ms aggregate warm p95, 414 ms model load, and 410,608
-KiB after-run RSS. It is selected for the laptop streaming integration. Vosk
-remains the live implementation until the persistent worker passes partial
-transcript, endpoint, interruption, cancellation, recovery, and soak tests.
+KiB after-run RSS. It is selected for the laptop streaming integration. The
+persistent worker and daemon wiring are implemented with bounded PCM/text
+frames, worker reuse, cancellation, restart isolation, and partial transcripts.
+Live endpoint, interruption, recovery, and soak acceptance tests remain.
 
 This selection does not approve the SBC image. Moonshine's accuracy costs about
 212 MiB more after-run RSS than the earlier Vosk result, and PocketTTS can use
