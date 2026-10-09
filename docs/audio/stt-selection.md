@@ -58,3 +58,16 @@ Streaming as the new accuracy-first primary. Vosk remains the deployed laptop
 engine until the identical-fixture benchmark and the live streaming gates pass.
 This preserves a working fallback and avoids converting an upstream published
 WER into an Oreo-specific selection without local evidence.
+
+The identical-fixture benchmark is now complete. Moonshine returned zero word
+errors across 85 reference-word measurements (three fixtures, five repetitions)
+with stable output, 744 ms aggregate warm p95, 414 ms model load, and 410,608
+KiB after-run RSS. It is selected for the laptop streaming integration. Vosk
+remains the live implementation until the persistent worker passes partial
+transcript, endpoint, interruption, cancellation, recovery, and soak tests.
+
+This selection does not approve the SBC image. Moonshine's accuracy costs about
+212 MiB more after-run RSS than the earlier Vosk result, and PocketTTS can use
+about one GiB in its isolated worker. Combined peak memory and AArch64 latency
+must therefore be measured before choosing the device RAM tier or retaining
+both models concurrently.
