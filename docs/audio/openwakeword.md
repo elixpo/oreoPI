@@ -198,22 +198,25 @@ accepted activations in this speech-heavy hour before a longer corpus run.
 The first run at the original single intent threshold produced 229 acoustic
 candidates and 40 accepted false activations. None of the 229 Vosk transcripts
 contained a reviewed Oreo identity alias: ordinary audiobook dialogue was being
-accepted solely because it resembled direct address. The intent gate therefore
-uses two confidence levels. A transcript with an identity alias retains the
-reviewed `1.0` threshold; a transcript where Vosk lost the identity must reach
-`5.0`. Replaying all 229 calibration transcripts through that rule yields zero
-accepted activations, while the 12-fixture cascade remains 36/36 correct. A new
-full soak report is still required before promotion. Because this hour informed
-the threshold, it is calibration data rather than an independent selection
-gate.
+accepted solely because it resembled direct address. An initial `5.0` nameless
+threshold rejected all of those candidates, but an independent second hour
+found one false activation at score `5.60` among 176 candidates. The only
+recorded positive where Vosk loses the identity scores `9.18`.
 
-Build a disjoint second hour from the already-cached archive and use that as the
-validation gate. The second argument is the source offset in seconds, so this
-does not download anything again:
+The intent gate therefore uses two confidence levels. A transcript with an
+identity alias retains the reviewed `1.0` threshold; a transcript where Vosk
+lost the identity must reach the high-confidence `7.0` log-odds boundary. Both
+observed hours are now calibration data rather than independent selection
+gates. Replaying all 405 candidates through this rule yields zero accepted
+activations, while the 12-fixture cascade remains 36/36 correct.
+
+Build a disjoint third hour from the already-cached archive and use that as the
+untouched validation gate. The second argument is the source offset in seconds,
+so this does not download anything again:
 
 ```bash
 rtk ./scripts/fetch-wake-soak-corpus.sh \
-  target/audio-bench/librispeech-test-other-validation-1h.wav 3600
+  target/audio-bench/librispeech-test-other-validation-1h.wav 7200
 rtk .venv-wake/bin/python scripts/soak-wake.py \
   --wav target/audio-bench/librispeech-test-other-validation-1h.wav \
   --threshold 0.005 \

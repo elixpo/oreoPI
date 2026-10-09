@@ -6,7 +6,7 @@ use crate::{AudioError, AudioErrorKind, AudioFormat, PcmChunk, STT_FORMAT};
 
 const MAX_WAKE_TEXT_BYTES: usize = 512;
 const IDENTITY_INTENT_THRESHOLD: f64 = 1.0;
-const CONTEXT_ONLY_INTENT_THRESHOLD: f64 = 5.0;
+const CONTEXT_ONLY_INTENT_THRESHOLD: f64 = 7.0;
 const EMBEDDED_CORPUS: &str = include_str!("../../../config/wake-intent-corpus.tsv");
 const EMBEDDED_ALIASES: &str = include_str!("../../../config/wake-identity-aliases.txt");
 
@@ -356,6 +356,12 @@ mod tests {
             .expect("phrase scores");
         assert!(!generic.addressed);
         assert!(!generic.identity_present);
+
+        let ambiguous = classifier
+            .classify("true to you as you go to me if i can")
+            .expect("phrase scores");
+        assert!(!ambiguous.addressed);
+        assert!(!ambiguous.identity_present);
 
         let recovered = classifier
             .classify("can you hear me all you")

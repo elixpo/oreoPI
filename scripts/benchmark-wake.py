@@ -29,7 +29,7 @@ MAX_FIXTURE_SECONDS = 15
 MAX_FIXTURES = 64
 MAX_TRANSCRIPT_BYTES = 512
 IDENTITY_INTENT_THRESHOLD = 1.0
-CONTEXT_ONLY_INTENT_THRESHOLD = 5.0
+CONTEXT_ONLY_INTENT_THRESHOLD = 7.0
 
 
 @dataclass(frozen=True)
@@ -615,6 +615,10 @@ def self_test() -> None:
     assert tested >= 10
     generic, generic_score = classifier.classify("don't you hear me shut the door")
     assert not generic and generic_score < CONTEXT_ONLY_INTENT_THRESHOLD
+    ambiguous, ambiguous_score = classifier.classify(
+        "true to you as you go to me if i can"
+    )
+    assert not ambiguous and ambiguous_score < CONTEXT_ONLY_INTENT_THRESHOLD
     recovered, recovered_score = classifier.classify("can you hear me all you")
     assert recovered and recovered_score >= CONTEXT_ONLY_INTENT_THRESHOLD
     named, _ = classifier.classify("wake up ordeal")
