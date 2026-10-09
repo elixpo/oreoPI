@@ -37,6 +37,7 @@ enum RuntimeState {
     EngagedCapturing {
         vad: EnergyVad,
         samples: usize,
+        session_samples_left: usize,
     },
     Cooldown {
         samples_left: usize,
@@ -173,7 +174,8 @@ impl WakeCommandPipeline {
                 self.wake_window.push(chunk, cancellation)?;
                 *samples_left = samples_left.saturating_sub(chunk.samples().len());
                 if vad.observe(chunk) == VadDecision::SpeechStarted {
-                    self.begin_engaged_capture(cancellation)?;
+                    let session_samples_left = *samples_left;
+                    self.begin_engaged_capture(session_samples_left, cancellation)?;
                 } else if *samples_left == 0 {
                     self.wake_window.clear();
                     self.detector.reset(cancellation)?;
@@ -182,14 +184,19 @@ impl WakeCommandPipeline {
                 }
                 Ok(None)
             }
-            RuntimeState::EngagedCapturing { vad, samples } => {
+            RuntimeState::EngagedCapturing {
+                vad,
+                samples,
+                session_samples_left,
+            } => {
                 *samples = samples.saturating_add(chunk.samples().len());
+                *session_samples_left = session_samples_left.saturating_sub(chunk.samples().len());
                 self.transcriber.push(chunk, cancellation)?;
                 if vad.observe(chunk) == VadDecision::Endpoint
                     || *samples >= self.max_command_samples
                 {
-                    let transcript = self.transcriber.finish(cancellation)?;
-                    return self.complete_transcript(transcript, 0.0, cancellation);
+                    let remaining = *session_samples_left;
+                    return self.finish_engaged_capture(remaining, cancellation);
                 }
                 Ok(None)
             }
@@ -284,6 +291,7 @@ impl WakeCommandPipeline {
 
     fn begin_engaged_capture(
         &mut self,
+        session_samples_left: usize,
         cancellation: &CancellationToken,
     ) -> Result<(), AudioError> {
         let samples = self.wake_window.snapshot();
@@ -305,8 +313,32 @@ impl WakeCommandPipeline {
         self.state = RuntimeState::EngagedCapturing {
             vad: capture_vad,
             samples: samples.len(),
+            session_samples_left,
         };
         Ok(())
+    }
+
+    fn finish_engaged_capture(
+        &mut self,
+        session_samples_left: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<WakePipelineEvent>, AudioError> {
+        let transcript = self.transcriber.finish(cancellation)?;
+        if !transcript.trim().is_empty() {
+            return self.complete_transcript(transcript, 0.0, cancellation);
+        }
+        self.wake_window.clear();
+        if session_samples_left == 0 {
+            self.detector.reset(cancellation)?;
+            self.state = RuntimeState::Listening;
+            Ok(Some(WakePipelineEvent::ConversationEnded))
+        } else {
+            self.state = RuntimeState::Engaged {
+                vad: EnergyVad::new(VadConfig::sbc())?,
+                samples_left: session_samples_left,
+            };
+            Ok(None)
+        }
     }
 
     fn finish_command(

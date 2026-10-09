@@ -100,6 +100,10 @@ There are three interaction modes:
   detector. An exact phrase from `config/conversation-sleep-phrases.txt`, or
   30 seconds without another command, closes the window.
 
+An engaged VAD event that produces no Vosk text is treated as ambient noise. It
+returns to the remaining conversation window without emitting a command timeout
+or resetting the session.
+
 The maximum utterance remains 30 seconds. Rejected cold candidates use a 500 ms
 reset cooldown to prevent one utterance from triggering twice. A bounded
 supervisor restarts the local worker and microphone session with backoff after
