@@ -315,6 +315,9 @@ mod unix {
                 Some(WakePipelineEvent::CommandTimedOut) => {
                     write_log(LogEvent::VoiceCommandTimedOut, LogOutcome::Denied);
                 }
+                Some(WakePipelineEvent::ConversationEnded) => {
+                    write_log(LogEvent::VoiceConversationEnded, LogOutcome::Succeeded);
+                }
                 None => {}
             }
         }
@@ -615,6 +618,8 @@ mod unix {
         #[cfg(feature = "voice-runtime")]
         VoiceCommandTimedOut,
         #[cfg(feature = "voice-runtime")]
+        VoiceConversationEnded,
+        #[cfg(feature = "voice-runtime")]
         VoiceFault,
         #[cfg(feature = "voice-runtime")]
         VoiceListening,
@@ -636,6 +641,8 @@ mod unix {
                 Self::VoiceCommandReady => "voice_command_ready",
                 #[cfg(feature = "voice-runtime")]
                 Self::VoiceCommandTimedOut => "voice_command_timed_out",
+                #[cfg(feature = "voice-runtime")]
+                Self::VoiceConversationEnded => "voice_conversation_ended",
                 #[cfg(feature = "voice-runtime")]
                 Self::VoiceFault => "voice_fault",
                 #[cfg(feature = "voice-runtime")]

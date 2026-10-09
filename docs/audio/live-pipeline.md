@@ -76,6 +76,7 @@ The laptop-selected daemon path is:
 ```text
 CPAL -> bounded 16 kHz conversion -> openWakeWord worker
      -> streaming Vosk/intent gate -> immediate turn or VAD follow-up
+     -> 30-second contextual conversation window
 ```
 
 The openWakeWord worker is pinned to `.venv-wake`, has networking and inherited
@@ -85,18 +86,24 @@ follow-up timeout, cancellation, and microphone lifecycle. Candidate audio is
 streamed into Vosk until 300 ms of natural silence; there is no fixed one-second
 post-roll.
 
-There are two interaction modes:
+There are three interaction modes:
 
 - Saying only an accepted rendering of `Oreo` emits `wake_accepted` and opens a
   five-second follow-up window. The follow-up ends after 300 ms of silence.
 - An accepted contextual utterance such as “Oreo, set a timer” or “what is the
   weather, Oreo?” is already the command. It emits `voice_command_ready`
   immediately after its endpoint and does not ask for the sentence again.
+- Each command opens or refreshes a 30-second engaged window. During that
+  window, VAD starts a natural follow-up without another wake phrase. An
+  address-only nickname from `config/conversation-addresses.txt` opens the same
+  five-second follow-up capture. Those nicknames never enter the cold acoustic
+  detector. An exact phrase from `config/conversation-sleep-phrases.txt`, or
+  30 seconds without another command, closes the window.
 
-The maximum utterance remains 30 seconds. A 500 ms reset cooldown prevents one
-utterance from triggering twice, after which the detector is ready again. A
-bounded supervisor restarts the local worker and microphone session with
-backoff after recoverable failures instead of permanently stopping voice input.
+The maximum utterance remains 30 seconds. Rejected cold candidates use a 500 ms
+reset cooldown to prevent one utterance from triggering twice. A bounded
+supervisor restarts the local worker and microphone session with backoff after
+recoverable failures instead of permanently stopping voice input.
 
 Run the daemon from the repository root:
 
@@ -107,10 +114,9 @@ rtk env OREO_VOICE_ENABLED=1 OREO_REPO_ROOT="$PWD" \
   cargo run -p oreo-daemon --features voice-runtime
 ```
 
-Wait for `voice_listening`, then test both interaction modes above. A successful
+Wait for `voice_listening`, then test all interaction modes above. A successful
 transcription emits `voice_command_ready`; its text is deliberately absent from
-logs. Stop the daemon from another terminal with
-`cargo run -p elixpo-cli -- daemon stop`. This checkpoint ends at a bounded
-command transcript. Routing that transcript into a persistent Oreo harness
-session will add cancellation, barge-in, queued follow-ups, and steering in the
-next layer.
+logs. Session closure emits `voice_conversation_ended`. Stop the daemon from
+another terminal with `cargo run -p elixpo-cli -- daemon stop`. This checkpoint
+ends at a bounded command transcript. Routing that transcript into the existing
+turn controller is the next layer.

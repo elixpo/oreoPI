@@ -1,0 +1,9 @@
+# Exact local commands that close Oreo's contextual listening window.
+go to sleep
+go back to sleep
+stop listening
+that is all
+that's all
+we are done
+we're done
+

@@ -3,6 +3,7 @@
 //! Raw PCM exists only in short-lived chunks. This crate has no persistence,
 //! network, credential, or model-loading API.
 
+mod conversation;
 mod converter;
 mod cpal_io;
 mod metrics;
@@ -26,6 +27,7 @@ use std::fmt;
 
 use oreo_core::CancellationToken;
 
+pub use conversation::{ConversationDirective, ConversationLanguage};
 pub use converter::{ConvertingSource, PcmConverter};
 pub use cpal_io::{
     AudioDeviceSummary, AudioIoSnapshot, CaptureControl, CpalInputSource, CpalOutput,

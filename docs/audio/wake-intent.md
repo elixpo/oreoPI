@@ -92,8 +92,9 @@ listen to the relevant WAV and inspect the actual Vosk transcript.
 The untouched third LibriSpeech hour produced 209 permissive acoustic
 candidates, zero accepted false activations, 594 ms p95 candidate latency, and
 20.4x real-time throughput. The native daemon now owns the bounded worker,
-three-second wake window, and VAD-ended follow-up command capture. Agent
-handoff, barge-in, speech output, and AArch64 measurements are the next layers.
+three-second wake window, VAD-ended follow-up command capture, and a bounded
+30-second contextual conversation window. Agent handoff, barge-in, speech
+output, and AArch64 measurements are the next layers.
 
 The bilingual phone candidate can be reproduced with
 `./scripts/fetch-wake-model.sh bilingual` and `--kws-model bilingual`. Do not

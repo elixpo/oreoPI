@@ -20,7 +20,7 @@ offline speech-input path:
 CLI input -> local Unix socket -> daemon -> bounded SQLite state
          \-> local router or Oreo agent -> response plan -> output sink
 microphone -> bounded PCM conversion -> Vosk -> Oreo agent -> text response
-microphone -> openWakeWord -> Vosk intent gate -> VAD follow-up -> Vosk command
+microphone -> openWakeWord -> Vosk intent gate -> contextual VAD turns
 ```
 
 The developer voice command retains explicit Enter-to-start/Enter-to-stop
