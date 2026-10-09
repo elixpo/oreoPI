@@ -7,6 +7,7 @@ license-file.workspace = true
 
 [features]
 default = []
+openwakeword = []
 pocket-tts = []
 vosk-stt = ["dep:vosk"]
 

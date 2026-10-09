@@ -6,6 +6,8 @@
 mod converter;
 mod cpal_io;
 mod metrics;
+#[cfg(feature = "openwakeword")]
+mod openwakeword;
 mod pipeline;
 #[cfg(feature = "pocket-tts")]
 mod pocket_tts;
@@ -28,6 +30,8 @@ pub use cpal_io::{
     default_audio_devices,
 };
 pub use metrics::{LatencyMetric, LatencyReport, LatencyTargets, LatencyWindow};
+#[cfg(feature = "openwakeword")]
+pub use openwakeword::{OpenWakeWordConfig, OpenWakeWordDetector, WakeCandidate};
 pub use pipeline::{PipelinePhase, PushToTalkState};
 #[cfg(feature = "pocket-tts")]
 pub use pocket_tts::{PocketTtsConfig, PocketTtsSynthesizer};
