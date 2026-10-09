@@ -32,6 +32,8 @@ pub use capability::{
 };
 pub use crumb_agent::SteeringAction;
 
+const EMBEDDED_STEERING_CUES: &str = include_str!("../../../config/voice-steering-cues.tsv");
+
 /// Non-secret, bounded settings applied to every Oreo agent turn.
 ///
 /// Persona and trusted context may contain private data, so this type does not
@@ -142,6 +144,102 @@ pub struct AgentResponse {
 pub enum TurnSubmission {
     Queued,
     InterruptRequested,
+}
+
+/// Small local policy mapping conversational cues to harness steering actions.
+pub struct VoiceTurnPolicy {
+    queue_cues: Vec<String>,
+    replace_cues: Vec<String>,
+}
+
+impl VoiceTurnPolicy {
+    /// Loads reviewed steering cues without a model call.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, missing, or excessive embedded policy data.
+    pub fn embedded() -> Result<Self, AgentError> {
+        let mut queue_cues = Vec::new();
+        let mut replace_cues = Vec::new();
+        for line in EMBEDDED_STEERING_CUES.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((action, cue)) = line.split_once('\t') else {
+                return Err(steering_policy_error());
+            };
+            let cue = normalize_cue(cue);
+            if cue.is_empty() {
+                return Err(steering_policy_error());
+            }
+            match action {
+                "queue" => queue_cues.push(cue),
+                "replace" => replace_cues.push(cue),
+                _ => return Err(steering_policy_error()),
+            }
+        }
+        if queue_cues.is_empty()
+            || replace_cues.is_empty()
+            || queue_cues.len().saturating_add(replace_cues.len()) > 32
+        {
+            return Err(steering_policy_error());
+        }
+        Ok(Self {
+            queue_cues,
+            replace_cues,
+        })
+    }
+
+    /// Selects queue, replace, or immediate steering from local turn state.
+    #[must_use]
+    pub fn action(&self, transcript: &str, turn_active: bool) -> SteeringAction {
+        if !turn_active {
+            return SteeringAction::Queue;
+        }
+        let normalized = normalize_cue(transcript);
+        if self
+            .replace_cues
+            .iter()
+            .any(|cue| starts_with_cue(&normalized, cue))
+        {
+            SteeringAction::Replace
+        } else if self
+            .queue_cues
+            .iter()
+            .any(|cue| starts_with_cue(&normalized, cue))
+        {
+            SteeringAction::Queue
+        } else {
+            SteeringAction::Steer
+        }
+    }
+}
+
+fn normalize_cue(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '\'' {
+                character.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn starts_with_cue(transcript: &str, cue: &str) -> bool {
+    transcript == cue
+        || transcript
+            .strip_prefix(cue)
+            .is_some_and(|remainder| remainder.starts_with(' '))
+}
+
+fn steering_policy_error() -> AgentError {
+    AgentError::new(AgentErrorKind::Steering, "voice steering policy is invalid")
 }
 
 /// One bounded command removed from the transient turn queue.
@@ -335,6 +433,14 @@ impl AgentError {
     const fn new(kind: AgentErrorKind, message: &'static str) -> Self {
         Self { kind, message }
     }
+
+    #[must_use]
+    pub const fn is_cancelled(&self) -> bool {
+        matches!(
+            self.kind,
+            AgentErrorKind::Harness(HarnessErrorKind::Cancelled)
+        )
+    }
 }
 
 impl fmt::Display for AgentError {
@@ -501,7 +607,7 @@ mod tests {
 
     use super::{
         AgentEvent, AgentProfile, AgentTurnController, OreoAgent, SteeringAction, TurnSubmission,
-        inspect_memory, list_memory,
+        VoiceTurnPolicy, inspect_memory, list_memory,
     };
 
     struct FakeProvider {
@@ -670,6 +776,27 @@ mod tests {
                 .expect("replacement remains")
                 .message,
             "replacement"
+        );
+    }
+
+    #[test]
+    fn voice_policy_queues_replaces_and_steers_contextually() {
+        let policy = VoiceTurnPolicy::embedded().expect("policy loads");
+        assert_eq!(
+            policy.action("ordinary first command", false),
+            SteeringAction::Queue
+        );
+        assert_eq!(
+            policy.action("also check the weather", true),
+            SteeringAction::Queue
+        );
+        assert_eq!(
+            policy.action("Never mind, check the door instead", true),
+            SteeringAction::Replace
+        );
+        assert_eq!(
+            policy.action("stop and tell me the time", true),
+            SteeringAction::Steer
         );
     }
 }

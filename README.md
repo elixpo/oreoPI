@@ -26,10 +26,12 @@ microphone -> openWakeWord -> Vosk intent gate -> contextual VAD turns
 The developer voice command retains explicit Enter-to-start/Enter-to-stop
 capture. The daemon also has an opt-in, always-on laptop wake runtime; it keeps
 the acoustic model in an isolated local worker and never logs transcripts.
-Agent handoff from the daemon, TTS, and hardware GPIO are later layers. The CLI
-keeps an explicit offline path and enables the live Pollinations provider only
-when its credential is supplied through the process environment. GPT-5.4 Nano
-is the pinned default; `OREO_MODEL` can override it for controlled evaluations.
+Its optional `voice-agent` feature connects contextual commands to one
+persistent, cancellable Pollinations harness on an independent thread. TTS and
+hardware GPIO are later layers. The CLI keeps an explicit offline path and
+enables the live Pollinations provider only when its credential is supplied
+through the process environment. GPT-5.4 Nano is the pinned default;
+`OREO_MODEL` can override it for controlled evaluations.
 
 ## Build and test
 

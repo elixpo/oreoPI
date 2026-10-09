@@ -1,5 +1,8 @@
 //! Single-owner local daemon for Oreo state and timer scheduling.
 
+#[cfg(all(unix, feature = "voice-agent"))]
+mod agent_runtime;
+
 #[cfg(unix)]
 mod unix {
     use std::env;
@@ -14,6 +17,11 @@ mod unix {
     use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     use std::thread;
     use std::time::Duration;
+
+    #[cfg(feature = "voice-agent")]
+    use crate::agent_runtime::{
+        AgentRuntimeEvent, VoiceAgentConfig, VoiceAgentIngress, VoiceAgentRuntime,
+    };
 
     #[cfg(feature = "voice-runtime")]
     use oreo_audio::{
@@ -36,9 +44,12 @@ mod unix {
         pub limits: StateLimits,
     }
 
-    #[derive(Clone, Debug)]
     pub struct VoiceConfig {
         pub repository_root: PathBuf,
+        #[cfg(feature = "voice-agent")]
+        agent_config: Option<VoiceAgentConfig>,
+        #[cfg(feature = "voice-agent")]
+        agent_ingress: Option<VoiceAgentIngress>,
     }
 
     impl VoiceConfig {
@@ -46,6 +57,10 @@ mod unix {
         pub fn for_repository(root: impl AsRef<Path>) -> Self {
             Self {
                 repository_root: root.as_ref().to_path_buf(),
+                #[cfg(feature = "voice-agent")]
+                agent_config: None,
+                #[cfg(feature = "voice-agent")]
+                agent_ingress: None,
             }
         }
     }
@@ -125,7 +140,7 @@ mod unix {
 
     fn run_inner(
         config: &DaemonConfig,
-        voice_config: Option<VoiceConfig>,
+        mut voice_config: Option<VoiceConfig>,
     ) -> Result<(), DaemonError> {
         prepare_state_directory(&config.state_directory)?;
         let socket_path = config.socket_path();
@@ -168,11 +183,21 @@ mod unix {
                 )
             })?;
 
+        let agent = match spawn_voice_agent(&mut voice_config) {
+            Ok(agent) => agent,
+            Err(error) => {
+                let _ = request_stop(&shared);
+                let _ = scheduler.join();
+                return Err(error);
+            }
+        };
+
         let voice = match spawn_voice(&shared, voice_config) {
             Ok(voice) => voice,
             Err(error) => {
                 let _ = request_stop(&shared);
                 let _ = scheduler.join();
+                let _ = join_voice_agent(agent);
                 return Err(error);
             }
         };
@@ -193,10 +218,44 @@ mod unix {
             )
         })?;
         let voice_result = join_voice(voice);
+        let agent_result = join_voice_agent(agent);
         server_result
             .and(stop_result)
             .and(scheduler_result)
             .and(voice_result)
+            .and(agent_result)
+    }
+
+    #[cfg(feature = "voice-agent")]
+    fn spawn_voice_agent(
+        voice_config: &mut Option<VoiceConfig>,
+    ) -> Result<Option<VoiceAgentRuntime>, DaemonError> {
+        let Some(config) = voice_config.as_mut() else {
+            return Ok(None);
+        };
+        let Some(agent_config) = config.agent_config.take() else {
+            return Ok(None);
+        };
+        let runtime = VoiceAgentRuntime::spawn(agent_config, agent_event).map_err(agent_error)?;
+        config.agent_ingress = Some(runtime.ingress());
+        Ok(Some(runtime))
+    }
+
+    #[cfg(not(feature = "voice-agent"))]
+    const fn spawn_voice_agent(
+        _voice_config: &mut Option<VoiceConfig>,
+    ) -> Result<Option<()>, DaemonError> {
+        Ok(None)
+    }
+
+    #[cfg(feature = "voice-agent")]
+    fn join_voice_agent(agent: Option<VoiceAgentRuntime>) -> Result<(), DaemonError> {
+        agent.map_or(Ok(()), |agent| agent.shutdown().map_err(agent_error))
+    }
+
+    #[cfg(not(feature = "voice-agent"))]
+    const fn join_voice_agent(_agent: Option<()>) -> Result<(), DaemonError> {
+        Ok(())
     }
 
     #[cfg(feature = "voice-runtime")]
@@ -311,12 +370,30 @@ mod unix {
                         ));
                     }
                     write_log(LogEvent::VoiceCommandReady, LogOutcome::Succeeded);
+                    #[cfg(feature = "voice-agent")]
+                    if let Some(agent) = &config.agent_ingress {
+                        match agent.submit(&transcript) {
+                            Ok(oreo_agent::TurnSubmission::Queued) => {
+                                write_log(LogEvent::AgentTurnQueued, LogOutcome::Succeeded);
+                            }
+                            Ok(oreo_agent::TurnSubmission::InterruptRequested) => {
+                                write_log(LogEvent::AgentTurnInterrupted, LogOutcome::Succeeded);
+                            }
+                            Err(_) => {
+                                write_log(LogEvent::AgentTurnRejected, LogOutcome::Denied);
+                            }
+                        }
+                    }
                 }
                 Some(WakePipelineEvent::CommandTimedOut) => {
                     write_log(LogEvent::VoiceCommandTimedOut, LogOutcome::Denied);
                 }
                 Some(WakePipelineEvent::ConversationEnded) => {
                     write_log(LogEvent::VoiceConversationEnded, LogOutcome::Succeeded);
+                    #[cfg(feature = "voice-agent")]
+                    if let Some(agent) = &config.agent_ingress {
+                        let _ = agent.end_conversation();
+                    }
                 }
                 None => {}
             }
@@ -611,6 +688,22 @@ mod unix {
         TimerCancelled,
         TimerFired,
         RuntimeFault,
+        #[cfg(feature = "voice-agent")]
+        AgentReady,
+        #[cfg(feature = "voice-agent")]
+        AgentTurnCancelled,
+        #[cfg(feature = "voice-agent")]
+        AgentTurnCompleted,
+        #[cfg(feature = "voice-agent")]
+        AgentTurnFailed,
+        #[cfg(feature = "voice-agent")]
+        AgentTurnInterrupted,
+        #[cfg(feature = "voice-agent")]
+        AgentTurnQueued,
+        #[cfg(feature = "voice-agent")]
+        AgentTurnRejected,
+        #[cfg(feature = "voice-agent")]
+        AgentTurnStarted,
         #[cfg(feature = "voice-runtime")]
         WakeAccepted,
         #[cfg(feature = "voice-runtime")]
@@ -635,6 +728,22 @@ mod unix {
                 Self::TimerCancelled => "timer_cancelled",
                 Self::TimerFired => "timer_fired",
                 Self::RuntimeFault => "runtime_fault",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentReady => "agent_ready",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentTurnCancelled => "agent_turn_cancelled",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentTurnCompleted => "agent_turn_completed",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentTurnFailed => "agent_turn_failed",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentTurnInterrupted => "agent_turn_interrupted",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentTurnQueued => "agent_turn_queued",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentTurnRejected => "agent_turn_rejected",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentTurnStarted => "agent_turn_started",
                 #[cfg(feature = "voice-runtime")]
                 Self::WakeAccepted => "wake_accepted",
                 #[cfg(feature = "voice-runtime")]
@@ -681,6 +790,20 @@ mod unix {
             "{}",
             structured_log_line(event, outcome, SystemClock.now_ms())
         );
+    }
+
+    #[cfg(feature = "voice-agent")]
+    fn agent_event(event: AgentRuntimeEvent) {
+        let (event, outcome) = match event {
+            AgentRuntimeEvent::Ready => (LogEvent::AgentReady, LogOutcome::Succeeded),
+            AgentRuntimeEvent::TurnStarted => (LogEvent::AgentTurnStarted, LogOutcome::Succeeded),
+            AgentRuntimeEvent::TurnCompleted => {
+                (LogEvent::AgentTurnCompleted, LogOutcome::Succeeded)
+            }
+            AgentRuntimeEvent::TurnCancelled => (LogEvent::AgentTurnCancelled, LogOutcome::Denied),
+            AgentRuntimeEvent::TurnFailed => (LogEvent::AgentTurnFailed, LogOutcome::Failed),
+        };
+        write_log(event, outcome);
     }
 
     fn error_response(code: ErrorCode, message: &str) -> Response {
@@ -741,6 +864,7 @@ mod unix {
         StatePoisoned,
         State(StateErrorKind),
         Voice,
+        Agent,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -782,7 +906,12 @@ mod unix {
                         || env::current_dir().map_err(io_error),
                         |path| Ok(PathBuf::from(path)),
                     )?;
-                return run_inner(&config, Some(VoiceConfig::for_repository(root)));
+                let voice = configure_voice_agent(
+                    VoiceConfig::for_repository(&root),
+                    &root,
+                    &config.state_directory,
+                )?;
+                return run_inner(&config, Some(voice));
             }
             #[cfg(not(feature = "voice-runtime"))]
             {
@@ -808,8 +937,59 @@ mod unix {
     }
 
     #[cfg(feature = "voice-runtime")]
+    fn agent_enabled() -> Result<bool, DaemonError> {
+        match env::var("OREO_AGENT_ENABLED") {
+            Err(env::VarError::NotPresent) => Ok(false),
+            Ok(value) if matches!(value.as_str(), "1" | "true") => Ok(true),
+            Ok(value) if matches!(value.as_str(), "0" | "false") => Ok(false),
+            Ok(_) | Err(env::VarError::NotUnicode(_)) => Err(DaemonError::new(
+                DaemonErrorKind::Agent,
+                "OREO_AGENT_ENABLED must be true, false, 1, or 0",
+            )),
+        }
+    }
+
+    #[cfg(feature = "voice-agent")]
+    fn configure_voice_agent(
+        mut voice: VoiceConfig,
+        repository_root: &Path,
+        state_directory: &Path,
+    ) -> Result<VoiceConfig, DaemonError> {
+        if agent_enabled()? {
+            voice.agent_config = Some(
+                VoiceAgentConfig::from_environment(
+                    repository_root,
+                    state_directory.join("sessions"),
+                )
+                .map_err(agent_error)?,
+            );
+        }
+        Ok(voice)
+    }
+
+    #[cfg(all(feature = "voice-runtime", not(feature = "voice-agent")))]
+    fn configure_voice_agent(
+        voice: VoiceConfig,
+        _repository_root: &Path,
+        _state_directory: &Path,
+    ) -> Result<VoiceConfig, DaemonError> {
+        if agent_enabled()? {
+            return Err(DaemonError::new(
+                DaemonErrorKind::Agent,
+                "voice agent requires the voice-agent build feature",
+            ));
+        }
+        Ok(voice)
+    }
+
+    #[cfg(feature = "voice-runtime")]
     fn voice_error(_error: oreo_audio::AudioError) -> DaemonError {
         DaemonError::new(DaemonErrorKind::Voice, "voice runtime failed")
+    }
+
+    #[cfg(feature = "voice-agent")]
+    fn agent_error(_error: crate::agent_runtime::VoiceAgentError) -> DaemonError {
+        DaemonError::new(DaemonErrorKind::Agent, "voice agent failed")
     }
 
     fn state_directory() -> Result<PathBuf, DaemonError> {

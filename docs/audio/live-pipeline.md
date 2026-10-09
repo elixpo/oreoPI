@@ -109,7 +109,7 @@ reset cooldown to prevent one utterance from triggering twice. A bounded
 supervisor restarts the local worker and microphone session with backoff after
 recoverable failures instead of permanently stopping voice input.
 
-Run the daemon from the repository root:
+For transcription-only validation, run the daemon from the repository root:
 
 ```bash
 rtk env OREO_VOICE_ENABLED=1 OREO_REPO_ROOT="$PWD" \
@@ -118,9 +118,27 @@ rtk env OREO_VOICE_ENABLED=1 OREO_REPO_ROOT="$PWD" \
   cargo run -p oreo-daemon --features voice-runtime
 ```
 
+For the persistent agent path, put `POLLINATIONS_API_KEY` in the ignored
+`.env.local` file. `OREO_MODEL` is optional and defaults to
+`openai/gpt-5.4-nano`. The daemon reads only those two assignments without
+executing the file; process environment values take precedence. Then run:
+
+```bash
+rtk env OREO_VOICE_ENABLED=1 OREO_AGENT_ENABLED=1 OREO_REPO_ROOT="$PWD" \
+  OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  cargo run -p oreo-daemon --features voice-agent
+```
+
 Wait for `voice_listening`, then test all interaction modes above. A successful
 transcription emits `voice_command_ready`; its text is deliberately absent from
 logs. Session closure emits `voice_conversation_ended`. Stop the daemon from
-another terminal with `cargo run -p elixpo-cli -- daemon stop`. This checkpoint
-ends at a bounded command transcript. Routing that transcript into the existing
-turn controller is the next layer.
+another terminal with `cargo run -p elixpo-cli -- daemon stop`.
+
+With `voice-agent`, commands enter a bounded eight-message controller on a
+separate network thread. A normal utterance during an active response steers and
+cancels that turn. Leading cues in `config/voice-steering-cues.tsv` can queue or
+replace work. The agent retains at most four completed conversation turns and
+requests at most 256 output tokens. Logs expose only fixed lifecycle events;
+transcripts, response text, tool payloads, and credentials are excluded. The
+next layer consumes transient response deltas with Pocket TTS.
