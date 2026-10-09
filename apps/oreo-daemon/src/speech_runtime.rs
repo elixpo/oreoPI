@@ -8,8 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use oreo_audio::{
-    AudioErrorKind, AudioLimits, AudioOutput, CpalOutput, PcmConverter, PocketTtsConfig,
-    PocketTtsSynthesizer, StreamingSynthesizer, normalize_for_speech,
+    AudioErrorKind, AudioFormat, AudioLimits, AudioOutput, CpalOutput, PcmConverter,
+    PocketTtsConfig, PocketTtsSynthesizer, StreamingSynthesizer, normalize_for_speech,
 };
 use oreo_core::CancellationToken;
 
@@ -102,6 +102,7 @@ impl SpeechRuntime {
         let output = CpalOutput::open_default(limits)
             .map_err(|_| SpeechRuntimeError::new("speaker could not be opened"))?;
         let (sender, receiver) = mpsc::sync_channel(SPEECH_QUEUE_CAPACITY);
+        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let interrupt = Arc::new(AtomicBool::new(false));
         let speaking = Arc::new(AtomicBool::new(false));
         let echo = Arc::new(Mutex::new(PlaybackEchoGuard::default()));
@@ -120,6 +121,7 @@ impl SpeechRuntime {
             speaking,
             echo,
             emit,
+            startup: startup_sender,
         };
         let handle = thread::Builder::new()
             .name("oreo-speech".to_owned())
@@ -127,6 +129,12 @@ impl SpeechRuntime {
                 speech_loop(synthesizer, output, &loop_context);
             })
             .map_err(|_| SpeechRuntimeError::new("speech thread could not start"))?;
+        if startup_receiver.recv_timeout(Duration::from_secs(30)) != Ok(true) {
+            stopping.store(true, Ordering::Release);
+            return Err(SpeechRuntimeError::new(
+                "speech runtime could not initialize",
+            ));
+        }
         Ok(Self {
             ingress,
             stopping,
@@ -156,6 +164,7 @@ struct SpeechLoopContext {
     speaking: Arc<AtomicBool>,
     echo: Arc<Mutex<PlaybackEchoGuard>>,
     emit: fn(SpeechRuntimeEvent),
+    startup: SyncSender<bool>,
 }
 
 fn speech_loop(
@@ -163,18 +172,10 @@ fn speech_loop(
     mut output: CpalOutput,
     context: &SpeechLoopContext,
 ) {
-    let startup = CancellationToken::new();
-    if synthesizer.prewarm(&startup).is_err() {
-        (context.emit)(SpeechRuntimeEvent::Failed);
+    let Some(native_format) = initialize_speech(&mut synthesizer, &mut output, context) else {
         return;
-    }
-    let native_format = output.native_format();
-    if output.begin(native_format).is_err() {
-        (context.emit)(SpeechRuntimeEvent::Failed);
-        return;
-    }
+    };
     let mut output_active = true;
-    (context.emit)(SpeechRuntimeEvent::Ready);
     while !context.stopping.load(Ordering::Acquire) {
         if context.interrupt.swap(false, Ordering::AcqRel) {
             output.stop();
@@ -263,6 +264,27 @@ fn speech_loop(
     output.stop();
     context.speaking.store(false, Ordering::Release);
     synthesizer.shutdown();
+}
+
+fn initialize_speech(
+    synthesizer: &mut PocketTtsSynthesizer,
+    output: &mut CpalOutput,
+    context: &SpeechLoopContext,
+) -> Option<AudioFormat> {
+    let startup = CancellationToken::new();
+    let native_format = output.native_format();
+    if synthesizer
+        .prewarm(&startup)
+        .and_then(|()| output.begin(native_format))
+        .is_err()
+    {
+        let _ = context.startup.try_send(false);
+        (context.emit)(SpeechRuntimeEvent::Failed);
+        return None;
+    }
+    (context.emit)(SpeechRuntimeEvent::Ready);
+    let _ = context.startup.try_send(true);
+    Some(native_format)
 }
 
 #[derive(Default)]

@@ -328,6 +328,7 @@ impl VoiceAgentRuntime {
         let reset_requested = Arc::new(AtomicBool::new(false));
         let active_speech = Arc::new(Mutex::new(None));
         let (wake, receiver) = mpsc::sync_channel(1);
+        let (startup, startup_receiver) = mpsc::sync_channel(1);
         let ingress = VoiceAgentIngress {
             controller: controller.clone(),
             policy,
@@ -346,6 +347,7 @@ impl VoiceAgentRuntime {
             active_speech: active_speech.clone(),
             emit,
             emit_speech,
+            startup,
         };
         let handle = thread::Builder::new()
             .name("oreo-agent".to_owned())
@@ -353,6 +355,9 @@ impl VoiceAgentRuntime {
                 agent_loop(&mut agent, &runtime, &loop_context);
             })
             .map_err(|_| VoiceAgentError::new("voice agent thread could not start"))?;
+        startup_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| VoiceAgentError::new("voice agent thread could not initialize"))?;
         Ok(Self {
             ingress,
             stopping,
@@ -419,6 +424,7 @@ struct AgentLoopContext {
     active_speech: Arc<Mutex<Option<SpeechCancellation>>>,
     emit: fn(AgentRuntimeEvent),
     emit_speech: fn(SpeechRuntimeEvent),
+    startup: SyncSender<()>,
 }
 
 fn agent_loop(
@@ -427,6 +433,7 @@ fn agent_loop(
     context: &AgentLoopContext,
 ) {
     (context.emit)(AgentRuntimeEvent::Ready);
+    let _ = context.startup.try_send(());
     while !context.stopping.load(Ordering::Acquire) {
         if context.reset_requested.swap(false, Ordering::AcqRel) {
             agent.reset_conversation();
