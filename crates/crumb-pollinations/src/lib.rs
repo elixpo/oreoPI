@@ -156,12 +156,12 @@ impl PollinationsProvider {
         let endpoint = self.config.endpoint("/v1/chat/completions");
         let body = ChatCompletionRequest::from(request);
         let response = self
-            .send_once(
+            .send_with_retry(|| {
                 self.client
-                    .post(endpoint)
+                    .post(&endpoint)
                     .bearer_auth(self.config.api_key())
-                    .json(&body),
-            )
+                    .json(&body)
+            })
             .await?;
         Ok(Box::new(PollinationsChatStream::new(
             response.bytes_stream(),
