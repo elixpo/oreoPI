@@ -125,6 +125,32 @@ impl VoskTranscriber {
         }
     }
 
+    /// Returns the bounded transcript decoded so far without ending the
+    /// utterance. This is used for low-latency duplex barge-in decisions; it
+    /// does not persist PCM or transcript text.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no utterance is active or the live text exceeds the
+    /// configured transcript bound.
+    pub fn live_transcript(&mut self) -> Result<String, AudioError> {
+        let partial = self
+            .recognizer
+            .as_mut()
+            .ok_or_else(|| {
+                AudioError::new(
+                    AudioErrorKind::InvalidTransition,
+                    "Vosk transcription is not active",
+                )
+            })?
+            .partial_result()
+            .partial
+            .to_owned();
+        let mut transcript = self.transcript.clone();
+        append_bounded(&mut transcript, partial.trim(), self.max_transcript_bytes)?;
+        Ok(transcript)
+    }
+
     fn reset_utterance(&mut self) {
         self.recognizer = None;
         self.transcript.clear();

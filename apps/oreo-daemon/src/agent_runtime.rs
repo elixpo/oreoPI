@@ -133,7 +133,19 @@ pub(crate) enum AgentRuntimeEvent {
     TurnStarted,
     TurnCompleted,
     TurnCancelled,
-    TurnFailed,
+    TurnFailed(AgentFailureKind),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AgentFailureKind {
+    Controller,
+    Speech,
+    Session,
+    Provider,
+    Deadline,
+    Limit,
+    Persistence,
+    Configuration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -166,15 +178,8 @@ impl VoiceAgentIngress {
                 .map_err(|_| VoiceAgentError::new("voice agent queue rejected the command"))?
         };
         let was_speaking = self.speech.is_speaking();
-        if let Some(cancellation) = self
-            .active_speech
-            .lock()
-            .map_err(|_| VoiceAgentError::new("speech cancellation failed"))?
-            .as_ref()
-        {
-            self.speech.cancel(cancellation);
-        }
         if was_speaking {
+            self.interrupt_speech()?;
             submission = TurnSubmission::InterruptRequested;
         }
         signal(&self.wake)?;
@@ -219,6 +224,19 @@ impl VoiceAgentIngress {
 
     pub(crate) fn resembles_output(&self, transcript: &str) -> bool {
         self.speech.resembles_output(transcript)
+    }
+
+    pub(crate) fn interrupt_speech(&self) -> Result<(), VoiceAgentError> {
+        let active = self
+            .active_speech
+            .lock()
+            .map_err(|_| VoiceAgentError::new("speech cancellation failed"))?;
+        if let Some(cancellation) = active.as_ref()
+            && self.speech.is_speaking()
+        {
+            self.speech.cancel(cancellation);
+        }
+        Ok(())
     }
 
     pub(crate) fn phase(&self) -> ConversationPhase {
@@ -416,7 +434,7 @@ fn agent_loop(
         let turn = if let Ok(mut controller) = context.controller.lock() {
             controller.begin_next()
         } else {
-            (context.emit)(AgentRuntimeEvent::TurnFailed);
+            (context.emit)(AgentRuntimeEvent::TurnFailed(AgentFailureKind::Controller));
             return;
         };
         let Some(turn) = turn else {
@@ -430,7 +448,7 @@ fn agent_loop(
             }
             *active = Some(speech_cancellation.clone());
         } else {
-            (context.emit)(AgentRuntimeEvent::TurnFailed);
+            (context.emit)(AgentRuntimeEvent::TurnFailed(AgentFailureKind::Speech));
             return;
         }
         let Ok(mut sink) = LifecycleSink::new(
@@ -439,7 +457,7 @@ fn agent_loop(
             context.speech.clone(),
             speech_cancellation.clone(),
         ) else {
-            (context.emit)(AgentRuntimeEvent::TurnFailed);
+            (context.emit)(AgentRuntimeEvent::TurnFailed(AgentFailureKind::Speech));
             return;
         };
         let result = runtime.block_on(agent.ask(turn.message, &turn.cancellation, &mut sink));
@@ -451,7 +469,7 @@ fn agent_loop(
         if let Ok(mut controller) = context.controller.lock() {
             let _ = controller.finish_active(&turn.cancellation);
         } else {
-            (context.emit)(AgentRuntimeEvent::TurnFailed);
+            (context.emit)(AgentRuntimeEvent::TurnFailed(AgentFailureKind::Controller));
             return;
         }
         match result {
@@ -459,8 +477,30 @@ fn agent_loop(
             Err(error) if error.is_cancelled() => {
                 (context.emit)(AgentRuntimeEvent::TurnCancelled);
             }
-            Err(_) => (context.emit)(AgentRuntimeEvent::TurnFailed),
+            Err(error) => (context.emit)(AgentRuntimeEvent::TurnFailed(failure_kind(error.kind))),
         }
+    }
+}
+
+const fn failure_kind(kind: oreo_agent::AgentErrorKind) -> AgentFailureKind {
+    use crumb_harness::HarnessErrorKind;
+    use oreo_agent::AgentErrorKind;
+
+    match kind {
+        AgentErrorKind::Session => AgentFailureKind::Session,
+        AgentErrorKind::Steering
+        | AgentErrorKind::InvalidProfile
+        | AgentErrorKind::Harness(HarnessErrorKind::InvalidRequest | HarnessErrorKind::Cancelled) => {
+            AgentFailureKind::Configuration
+        }
+        AgentErrorKind::Harness(HarnessErrorKind::Provider) => AgentFailureKind::Provider,
+        AgentErrorKind::Harness(HarnessErrorKind::DeadlineExceeded) => AgentFailureKind::Deadline,
+        AgentErrorKind::Harness(
+            HarnessErrorKind::OutputLimit
+            | HarnessErrorKind::ModelRoundLimit
+            | HarnessErrorKind::ToolCallLimit,
+        ) => AgentFailureKind::Limit,
+        AgentErrorKind::Harness(HarnessErrorKind::Persistence) => AgentFailureKind::Persistence,
     }
 }
 
@@ -552,7 +592,10 @@ impl std::error::Error for VoiceAgentError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_local_environment, parse_value};
+    use crumb_harness::HarnessErrorKind;
+    use oreo_agent::AgentErrorKind;
+
+    use super::{AgentFailureKind, failure_kind, parse_local_environment, parse_value};
 
     #[test]
     fn local_environment_reads_only_approved_keys() {
@@ -574,6 +617,22 @@ mod tests {
         assert!(parse_value("$(steal-key)").is_err());
         assert!(
             parse_local_environment("POLLINATIONS_API_KEY=one\nPOLLINATIONS_API_KEY=two").is_err()
+        );
+    }
+
+    #[test]
+    fn agent_failures_keep_safe_operational_categories() {
+        assert_eq!(
+            failure_kind(AgentErrorKind::Harness(HarnessErrorKind::Provider)),
+            AgentFailureKind::Provider
+        );
+        assert_eq!(
+            failure_kind(AgentErrorKind::Harness(HarnessErrorKind::DeadlineExceeded)),
+            AgentFailureKind::Deadline
+        );
+        assert_eq!(
+            failure_kind(AgentErrorKind::Harness(HarnessErrorKind::OutputLimit)),
+            AgentFailureKind::Limit
         );
     }
 }

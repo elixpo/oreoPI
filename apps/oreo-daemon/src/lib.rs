@@ -30,8 +30,9 @@ mod unix {
 
     #[cfg(feature = "voice-runtime")]
     use oreo_audio::{
-        AudioLimits, AudioSource, ConvertingSource, CpalInputSource, OpenWakeWordConfig,
-        OpenWakeWordDetector, STT_FORMAT, VoskTranscriber, WakeCommandPipeline, WakePipelineEvent,
+        AudioLimits, AudioSource, ConversationAudioPhase, ConvertingSource, CpalInputSource,
+        OpenWakeWordConfig, OpenWakeWordDetector, STT_FORMAT, VoskTranscriber, WakeCommandPipeline,
+        WakePipelineEvent,
     };
     #[cfg(feature = "voice-runtime")]
     use oreo_core::CancellationToken;
@@ -422,6 +423,9 @@ mod unix {
                         let _ = agent.request_clarification();
                     }
                 }
+                Some(WakePipelineEvent::PossibleBargeIn { transcript }) => {
+                    handle_possible_barge_in(config, &transcript);
+                }
                 None => {}
             }
         }
@@ -439,6 +443,19 @@ mod unix {
     }
 
     #[cfg(feature = "voice-agent")]
+    fn handle_possible_barge_in(config: &VoiceConfig, transcript: &str) {
+        if let Some(agent) = &config.agent_ingress
+            && !agent.resembles_output(transcript)
+            && agent.interrupt_speech().is_ok()
+        {
+            write_log(LogEvent::VoiceBargeIn, LogOutcome::Succeeded);
+        }
+    }
+
+    #[cfg(not(feature = "voice-agent"))]
+    fn handle_possible_barge_in(_config: &VoiceConfig, _transcript: &str) {}
+
+    #[cfg(feature = "voice-agent")]
     fn update_conversation_phase(
         config: &VoiceConfig,
         pipeline: &mut WakeCommandPipeline,
@@ -448,7 +465,11 @@ mod unix {
             return;
         };
         let phase = agent.phase();
-        pipeline.set_conversation_busy(phase != ConversationPhase::Listening);
+        pipeline.set_conversation_phase(match phase {
+            ConversationPhase::Listening => ConversationAudioPhase::Listening,
+            ConversationPhase::Thinking => ConversationAudioPhase::Thinking,
+            ConversationPhase::Speaking => ConversationAudioPhase::Speaking,
+        });
         if phase == *last_phase {
             return;
         }
@@ -848,7 +869,13 @@ mod unix {
         #[cfg(feature = "voice-agent")]
         AgentTurnCompleted,
         #[cfg(feature = "voice-agent")]
-        AgentTurnFailed,
+        AgentProviderFailed,
+        #[cfg(feature = "voice-agent")]
+        AgentDeadlineExceeded,
+        #[cfg(feature = "voice-agent")]
+        AgentLimitReached,
+        #[cfg(feature = "voice-agent")]
+        AgentRuntimeFailed,
         #[cfg(feature = "voice-agent")]
         AgentTurnInterrupted,
         #[cfg(feature = "voice-agent")]
@@ -881,6 +908,8 @@ mod unix {
         VoiceConversationEnded,
         #[cfg(feature = "voice-agent")]
         VoiceEchoRejected,
+        #[cfg(feature = "voice-agent")]
+        VoiceBargeIn,
         #[cfg(feature = "voice-runtime")]
         VoiceFault,
         #[cfg(feature = "voice-runtime")]
@@ -908,7 +937,13 @@ mod unix {
                 #[cfg(feature = "voice-agent")]
                 Self::AgentTurnCompleted => "agent_turn_completed",
                 #[cfg(feature = "voice-agent")]
-                Self::AgentTurnFailed => "agent_turn_failed",
+                Self::AgentProviderFailed => "agent_provider_failed",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentDeadlineExceeded => "agent_deadline_exceeded",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentLimitReached => "agent_limit_reached",
+                #[cfg(feature = "voice-agent")]
+                Self::AgentRuntimeFailed => "agent_runtime_failed",
                 #[cfg(feature = "voice-agent")]
                 Self::AgentTurnInterrupted => "agent_turn_interrupted",
                 #[cfg(feature = "voice-agent")]
@@ -941,6 +976,8 @@ mod unix {
                 Self::VoiceConversationEnded => "voice_conversation_ended",
                 #[cfg(feature = "voice-agent")]
                 Self::VoiceEchoRejected => "voice_echo_rejected",
+                #[cfg(feature = "voice-agent")]
+                Self::VoiceBargeIn => "voice_barge_in",
                 #[cfg(feature = "voice-runtime")]
                 Self::VoiceFault => "voice_fault",
                 #[cfg(feature = "voice-runtime")]
@@ -994,7 +1031,25 @@ mod unix {
                 (LogEvent::AgentTurnCompleted, LogOutcome::Succeeded)
             }
             AgentRuntimeEvent::TurnCancelled => (LogEvent::AgentTurnCancelled, LogOutcome::Denied),
-            AgentRuntimeEvent::TurnFailed => (LogEvent::AgentTurnFailed, LogOutcome::Failed),
+            AgentRuntimeEvent::TurnFailed(kind) => (
+                match kind {
+                    crate::agent_runtime::AgentFailureKind::Provider => {
+                        LogEvent::AgentProviderFailed
+                    }
+                    crate::agent_runtime::AgentFailureKind::Deadline => {
+                        LogEvent::AgentDeadlineExceeded
+                    }
+                    crate::agent_runtime::AgentFailureKind::Limit => LogEvent::AgentLimitReached,
+                    crate::agent_runtime::AgentFailureKind::Controller
+                    | crate::agent_runtime::AgentFailureKind::Speech
+                    | crate::agent_runtime::AgentFailureKind::Session
+                    | crate::agent_runtime::AgentFailureKind::Persistence
+                    | crate::agent_runtime::AgentFailureKind::Configuration => {
+                        LogEvent::AgentRuntimeFailed
+                    }
+                },
+                LogOutcome::Failed,
+            ),
         };
         write_log(event, outcome);
     }

@@ -49,7 +49,7 @@ pub use wake::{
     WarmTurnClassifier,
 };
 #[cfg(feature = "voice-runtime")]
-pub use wake_runtime::{WakeCommandPipeline, WakePipelineEvent};
+pub use wake_runtime::{ConversationAudioPhase, WakeCommandPipeline, WakePipelineEvent};
 pub use wav::WavSource;
 
 pub const MAX_CHANNELS: u16 = 2;

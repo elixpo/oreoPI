@@ -13,11 +13,28 @@ const CONVERSATION_WINDOW_SAMPLES: usize = 30 * 16_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WakePipelineEvent {
-    WakeAccepted { score: f32 },
-    CommandReady { transcript: String },
+    WakeAccepted {
+        score: f32,
+    },
+    CommandReady {
+        transcript: String,
+    },
     CommandTimedOut,
     ConversationEnded,
     ClarificationNeeded,
+    /// A non-trivial live utterance was heard while Oreo was speaking. The
+    /// daemon compares it with the private playback reference before ducking
+    /// output; the partial text is never logged or persisted.
+    PossibleBargeIn {
+        transcript: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConversationAudioPhase {
+    Listening,
+    Thinking,
+    Speaking,
 }
 
 enum RuntimeState {
@@ -40,10 +57,23 @@ enum RuntimeState {
         vad: EnergyVad,
         samples: usize,
         session_samples_left: usize,
+        last_live_transcript: String,
     },
     Cooldown {
         samples_left: usize,
     },
+}
+
+enum EngagedCaptureProgress {
+    Continue,
+    BargeIn(String),
+    Finished(usize),
+}
+
+enum CommandCaptureProgress {
+    Continue,
+    Finish,
+    TimedOut,
 }
 
 /// Owns the bounded wake-to-follow-up-command state machine.
@@ -61,7 +91,7 @@ pub struct WakeCommandPipeline {
     state: RuntimeState,
     limits: AudioLimits,
     max_command_samples: usize,
-    conversation_busy: bool,
+    conversation_phase: ConversationAudioPhase,
 }
 
 impl WakeCommandPipeline {
@@ -94,14 +124,14 @@ impl WakeCommandPipeline {
             state: RuntimeState::Listening,
             limits,
             max_command_samples,
-            conversation_busy: false,
+            conversation_phase: ConversationAudioPhase::Listening,
         })
     }
 
     /// Holds the warm conversation window open while the agent is thinking or
     /// speaking. The microphone continues processing possible steering turns.
-    pub fn set_conversation_busy(&mut self, busy: bool) {
-        self.conversation_busy = busy;
+    pub fn set_conversation_phase(&mut self, phase: ConversationAudioPhase) {
+        self.conversation_phase = phase;
     }
 
     /// Warms the acoustic worker before microphone processing begins.
@@ -124,6 +154,7 @@ impl WakeCommandPipeline {
         cancellation: &CancellationToken,
     ) -> Result<Option<WakePipelineEvent>, AudioError> {
         self.validate_chunk(chunk, cancellation)?;
+        let conversation_busy = self.conversation_phase != ConversationAudioPhase::Listening;
         match &mut self.state {
             RuntimeState::Listening => {
                 self.wake_window.push(chunk, cancellation)?;
@@ -158,33 +189,28 @@ impl WakeCommandPipeline {
                 vad,
                 samples,
                 speech_started,
-            } => {
-                *samples = samples.saturating_add(chunk.samples().len());
-                self.transcriber.push(chunk, cancellation)?;
-                match vad.observe(chunk) {
-                    VadDecision::SpeechStarted => *speech_started = true,
-                    VadDecision::Endpoint if *speech_started => {
-                        return self.finish_command(cancellation);
-                    }
-                    VadDecision::Silence | VadDecision::Speech | VadDecision::Endpoint => {}
-                }
-                if (!*speech_started && *samples >= COMMAND_START_TIMEOUT_SAMPLES)
-                    || *samples >= self.max_command_samples
-                {
-                    if *speech_started {
-                        return self.finish_command(cancellation);
-                    }
+            } => match advance_command_capture(
+                &mut self.transcriber,
+                self.max_command_samples,
+                chunk,
+                cancellation,
+                vad,
+                samples,
+                speech_started,
+            )? {
+                CommandCaptureProgress::Continue => Ok(None),
+                CommandCaptureProgress::Finish => self.finish_command(cancellation),
+                CommandCaptureProgress::TimedOut => {
                     self.transcriber.abort();
                     self.state = RuntimeState::Cooldown {
                         samples_left: COOLDOWN_SAMPLES,
                     };
-                    return Ok(Some(WakePipelineEvent::CommandTimedOut));
+                    Ok(Some(WakePipelineEvent::CommandTimedOut))
                 }
-                Ok(None)
-            }
+            },
             RuntimeState::Engaged { vad, samples_left } => {
                 self.wake_window.push(chunk, cancellation)?;
-                consume_session_time(samples_left, chunk.samples().len(), self.conversation_busy);
+                consume_session_time(samples_left, chunk.samples().len(), conversation_busy);
                 if vad.observe(chunk) == VadDecision::SpeechStarted {
                     let session_samples_left = *samples_left;
                     self.begin_engaged_capture(session_samples_left, cancellation)?;
@@ -200,18 +226,24 @@ impl WakeCommandPipeline {
                 vad,
                 samples,
                 session_samples_left,
-            } => {
-                *samples = samples.saturating_add(chunk.samples().len());
-                tick_session(session_samples_left, chunk, self.conversation_busy);
-                self.transcriber.push(chunk, cancellation)?;
-                if vad.observe(chunk) == VadDecision::Endpoint
-                    || *samples >= self.max_command_samples
-                {
-                    let remaining = *session_samples_left;
-                    return self.finish_engaged_capture(remaining, cancellation);
+                last_live_transcript,
+            } => match advance_engaged_capture(
+                &mut self.transcriber,
+                self.conversation_phase,
+                self.max_command_samples,
+                chunk,
+                cancellation,
+                vad,
+                samples,
+                session_samples_left,
+                last_live_transcript,
+            )? {
+                EngagedCaptureProgress::Continue => Ok(None),
+                EngagedCaptureProgress::BargeIn(transcript) => Ok(Some(barge_in(transcript))),
+                EngagedCaptureProgress::Finished(remaining) => {
+                    self.finish_engaged_capture(remaining, cancellation)
                 }
-                Ok(None)
-            }
+            },
             RuntimeState::Cooldown { samples_left } => {
                 *samples_left = samples_left.saturating_sub(chunk.samples().len());
                 if *samples_left == 0 {
@@ -332,6 +364,7 @@ impl WakeCommandPipeline {
             vad: capture_vad,
             samples: samples.len(),
             session_samples_left,
+            last_live_transcript: String::new(),
         };
         Ok(())
     }
@@ -455,6 +488,95 @@ fn consume_session_time(samples_left: &mut usize, samples: usize, held: bool) {
 
 fn tick_session(samples_left: &mut usize, chunk: &PcmChunk, held: bool) {
     consume_session_time(samples_left, chunk.samples().len(), held);
+}
+
+fn advance_command_capture(
+    transcriber: &mut VoskTranscriber,
+    max_command_samples: usize,
+    chunk: &PcmChunk,
+    cancellation: &CancellationToken,
+    vad: &mut EnergyVad,
+    samples: &mut usize,
+    speech_started: &mut bool,
+) -> Result<CommandCaptureProgress, AudioError> {
+    *samples = samples.saturating_add(chunk.samples().len());
+    transcriber.push(chunk, cancellation)?;
+    match vad.observe(chunk) {
+        VadDecision::SpeechStarted => *speech_started = true,
+        VadDecision::Endpoint if *speech_started => return Ok(CommandCaptureProgress::Finish),
+        VadDecision::Silence | VadDecision::Speech | VadDecision::Endpoint => {}
+    }
+    if (!*speech_started && *samples >= COMMAND_START_TIMEOUT_SAMPLES)
+        || *samples >= max_command_samples
+    {
+        Ok(if *speech_started {
+            CommandCaptureProgress::Finish
+        } else {
+            CommandCaptureProgress::TimedOut
+        })
+    } else {
+        Ok(CommandCaptureProgress::Continue)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_engaged_capture(
+    transcriber: &mut VoskTranscriber,
+    phase: ConversationAudioPhase,
+    max_command_samples: usize,
+    chunk: &PcmChunk,
+    cancellation: &CancellationToken,
+    vad: &mut EnergyVad,
+    samples: &mut usize,
+    session_samples_left: &mut usize,
+    last_live_transcript: &mut String,
+) -> Result<EngagedCaptureProgress, AudioError> {
+    *samples = samples.saturating_add(chunk.samples().len());
+    tick_session(
+        session_samples_left,
+        chunk,
+        phase != ConversationAudioPhase::Listening,
+    );
+    transcriber.push(chunk, cancellation)?;
+    let vad_decision = vad.observe(chunk);
+    if phase == ConversationAudioPhase::Speaking {
+        let live = transcriber.live_transcript()?;
+        if live != *last_live_transcript && has_barge_in_evidence(&live) {
+            live.clone_into(last_live_transcript);
+            return Ok(EngagedCaptureProgress::BargeIn(live));
+        }
+    }
+    if vad_decision == VadDecision::Endpoint || *samples >= max_command_samples {
+        Ok(EngagedCaptureProgress::Finished(*session_samples_left))
+    } else {
+        Ok(EngagedCaptureProgress::Continue)
+    }
+}
+
+fn has_barge_in_evidence(transcript: &str) -> bool {
+    transcript
+        .split_whitespace()
+        .filter(|word| word.chars().any(char::is_alphanumeric))
+        .take(2)
+        .count()
+        == 2
+}
+
+fn barge_in(transcript: String) -> WakePipelineEvent {
+    WakePipelineEvent::PossibleBargeIn { transcript }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_barge_in_evidence;
+
+    #[test]
+    fn barge_in_evidence_is_generic_and_requires_a_formed_partial() {
+        assert!(!has_barge_in_evidence("wait"));
+        assert!(has_barge_in_evidence("wait listen"));
+        assert!(has_barge_in_evidence("explain supernovae"));
+        assert!(has_barge_in_evidence("choose another route"));
+    }
 }
 
 impl Drop for WakeCommandPipeline {

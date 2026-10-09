@@ -1204,6 +1204,7 @@ version = "0.1.0"
 name = "oreo-daemon"
 version = "0.1.0"
 dependencies = [
+ "crumb-harness",
  "oreo-agent",
  "oreo-audio",
  "oreo-core",

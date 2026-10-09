@@ -10,12 +10,14 @@ default = []
 voice-runtime = ["dep:oreo-audio", "dep:oreo-core", "oreo-audio/voice-runtime"]
 voice-agent = [
     "voice-runtime",
+    "dep:crumb-harness",
     "dep:oreo-agent",
     "dep:tokio",
     "oreo-audio/pocket-tts",
 ]
 
 [dependencies]
+crumb-harness = { path = "../../crates/crumb-harness", optional = true }
 oreo-audio = { path = "../../crates/oreo-audio", optional = true }
 oreo-agent = { path = "../../crates/oreo-agent", optional = true }
 oreo-core = { path = "../../crates/oreo-core", optional = true }
