@@ -75,15 +75,28 @@ The laptop-selected daemon path is:
 
 ```text
 CPAL -> bounded 16 kHz conversion -> openWakeWord worker
-     -> three-second Vosk/intent gate -> VAD follow-up -> Vosk command
+     -> streaming Vosk/intent gate -> immediate turn or VAD follow-up
 ```
 
 The openWakeWord worker is pinned to `.venv-wake`, has networking and inherited
 environment variables removed, accepts only fixed 1,280-sample frames, and
 returns one bounded score. Rust owns the rolling window, thresholds, Vosk,
-follow-up timeout, cancellation, and microphone lifecycle. After activation,
-speak the command within five seconds; 300 ms of silence ends it. The maximum
-command duration remains 30 seconds.
+follow-up timeout, cancellation, and microphone lifecycle. Candidate audio is
+streamed into Vosk until 300 ms of natural silence; there is no fixed one-second
+post-roll.
+
+There are two interaction modes:
+
+- Saying only an accepted rendering of `Oreo` emits `wake_accepted` and opens a
+  five-second follow-up window. The follow-up ends after 300 ms of silence.
+- An accepted contextual utterance such as “Oreo, set a timer” or “what is the
+  weather, Oreo?” is already the command. It emits `voice_command_ready`
+  immediately after its endpoint and does not ask for the sentence again.
+
+The maximum utterance remains 30 seconds. A 500 ms reset cooldown prevents one
+utterance from triggering twice, after which the detector is ready again. A
+bounded supervisor restarts the local worker and microphone session with
+backoff after recoverable failures instead of permanently stopping voice input.
 
 Run the daemon from the repository root:
 
@@ -94,9 +107,10 @@ rtk env OREO_VOICE_ENABLED=1 OREO_REPO_ROOT="$PWD" \
   cargo run -p oreo-daemon --features voice-runtime
 ```
 
-Say an accepted Oreo address, wait for the fixed `wake_accepted` event, and
-then speak one command. A successful transcription emits
-`voice_command_ready`; its text is deliberately absent from logs. Stop the
-daemon from another terminal with `cargo run -p elixpo-cli -- daemon stop`.
-This checkpoint ends at a bounded command transcript. Routing that transcript
-through the Oreo agent and speech output is the next layer.
+Wait for `voice_listening`, then test both interaction modes above. A successful
+transcription emits `voice_command_ready`; its text is deliberately absent from
+logs. Stop the daemon from another terminal with
+`cargo run -p elixpo-cli -- daemon stop`. This checkpoint ends at a bounded
+command transcript. Routing that transcript into a persistent Oreo harness
+session will add cancellation, barge-in, queued follow-ups, and steering in the
+next layer.

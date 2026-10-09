@@ -6,8 +6,7 @@ use crate::{
     WakeIntentClassifier,
 };
 
-const POST_ROLL_SAMPLES: usize = 16_000;
-const COOLDOWN_SAMPLES: usize = 16_000;
+const COOLDOWN_SAMPLES: usize = 8_000;
 const COMMAND_START_TIMEOUT_SAMPLES: usize = 5 * 16_000;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -19,9 +18,10 @@ pub enum WakePipelineEvent {
 
 enum RuntimeState {
     Listening,
-    Candidate {
+    Validating {
         score: f32,
-        post_roll_left: usize,
+        vad: EnergyVad,
+        samples: usize,
     },
     Capturing {
         vad: EnergyVad,
@@ -98,51 +98,43 @@ impl WakeCommandPipeline {
         chunk: &PcmChunk,
         cancellation: &CancellationToken,
     ) -> Result<Option<WakePipelineEvent>, AudioError> {
-        if chunk.format() != STT_FORMAT {
-            return Err(AudioError::new(
-                AudioErrorKind::UnsupportedFormat,
-                "voice runtime requires 16 kHz mono PCM",
-            ));
-        }
-        if cancellation.is_cancelled() {
-            self.transcriber.abort();
-            self.wake_window.clear();
-            return Err(AudioError::new(
-                AudioErrorKind::Cancelled,
-                "voice runtime was cancelled",
-            ));
-        }
-
+        self.validate_chunk(chunk, cancellation)?;
         match &mut self.state {
             RuntimeState::Listening => {
                 self.wake_window.push(chunk, cancellation)?;
                 if let Some(candidate) = self.detector.push(chunk, cancellation)? {
-                    self.state = RuntimeState::Candidate {
+                    let mut vad = EnergyVad::new(VadConfig::sbc())?;
+                    let samples = self.begin_candidate(&mut vad, cancellation)?;
+                    self.detector.reset(cancellation)?;
+                    self.state = RuntimeState::Validating {
                         score: candidate.score,
-                        post_roll_left: POST_ROLL_SAMPLES,
+                        vad,
+                        samples,
                     };
                 }
                 Ok(None)
             }
-            RuntimeState::Candidate {
+            RuntimeState::Validating {
                 score,
-                post_roll_left,
+                vad,
+                samples,
             } => {
-                self.wake_window.push(chunk, cancellation)?;
-                *post_roll_left = post_roll_left.saturating_sub(chunk.samples().len());
-                if *post_roll_left != 0 {
+                *samples = samples.saturating_add(chunk.samples().len());
+                self.transcriber.push(chunk, cancellation)?;
+                if vad.observe(chunk) != VadDecision::Endpoint
+                    && *samples < self.max_command_samples
+                {
                     return Ok(None);
                 }
                 let candidate_score = *score;
-                let transcript = self.transcribe_wake_window(cancellation)?;
-                let accepted = if transcript.trim().is_empty() {
-                    false
-                } else {
-                    self.classifier.classify(&transcript)?.addressed
-                };
-                self.detector.reset(cancellation)?;
+                let transcript = self.transcriber.finish(cancellation)?;
+                let decision = (!transcript.trim().is_empty())
+                    .then(|| self.classifier.classify(&transcript))
+                    .transpose()?;
                 self.wake_window.clear();
-                if accepted {
+                if decision.is_some_and(|decision| decision.addressed)
+                    && self.classifier.is_identity_only(&transcript)
+                {
                     self.transcriber.begin(STT_FORMAT)?;
                     self.state = RuntimeState::Capturing {
                         vad: EnergyVad::new(VadConfig::sbc())?,
@@ -152,6 +144,11 @@ impl WakeCommandPipeline {
                     Ok(Some(WakePipelineEvent::WakeAccepted {
                         score: candidate_score,
                     }))
+                } else if decision.is_some_and(|decision| decision.addressed) {
+                    self.state = RuntimeState::Cooldown {
+                        samples_left: COOLDOWN_SAMPLES,
+                    };
+                    Ok(Some(WakePipelineEvent::CommandReady { transcript }))
                 } else {
                     self.state = RuntimeState::Cooldown {
                         samples_left: COOLDOWN_SAMPLES,
@@ -197,29 +194,53 @@ impl WakeCommandPipeline {
         }
     }
 
+    fn validate_chunk(
+        &mut self,
+        chunk: &PcmChunk,
+        cancellation: &CancellationToken,
+    ) -> Result<(), AudioError> {
+        if chunk.format() != STT_FORMAT {
+            return Err(AudioError::new(
+                AudioErrorKind::UnsupportedFormat,
+                "voice runtime requires 16 kHz mono PCM",
+            ));
+        }
+        if cancellation.is_cancelled() {
+            self.transcriber.abort();
+            self.wake_window.clear();
+            return Err(AudioError::new(
+                AudioErrorKind::Cancelled,
+                "voice runtime was cancelled",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn shutdown(&mut self) {
         self.transcriber.abort();
         self.detector.shutdown();
         self.wake_window.clear();
     }
 
-    fn transcribe_wake_window(
+    fn begin_candidate(
         &mut self,
+        vad: &mut EnergyVad,
         cancellation: &CancellationToken,
-    ) -> Result<String, AudioError> {
+    ) -> Result<usize, AudioError> {
         let samples = self.wake_window.snapshot();
         self.transcriber.begin(STT_FORMAT)?;
-        let transcription = (|| {
+        let transcription = (|| -> Result<(), AudioError> {
             for samples in samples.chunks(1_600) {
                 let chunk = PcmChunk::new(STT_FORMAT, samples.to_vec())?;
                 self.transcriber.push(&chunk, cancellation)?;
+                let _ = vad.observe(&chunk);
             }
-            self.transcriber.finish(cancellation)
+            Ok(())
         })();
         if transcription.is_err() {
             self.transcriber.abort();
         }
-        transcription
+        transcription.map(|()| samples.len())
     }
 
     fn finish_command(

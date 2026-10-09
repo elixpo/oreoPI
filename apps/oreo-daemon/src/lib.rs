@@ -203,19 +203,14 @@ mod unix {
     fn spawn_voice(
         shared: &Arc<SharedState>,
         config: Option<VoiceConfig>,
-    ) -> Result<Option<thread::JoinHandle<Result<(), DaemonError>>>, DaemonError> {
+    ) -> Result<Option<thread::JoinHandle<()>>, DaemonError> {
         config
             .map(|voice_config| {
                 let voice_state = shared.clone();
                 thread::Builder::new()
                     .name("oreo-voice".to_owned())
                     .spawn(move || {
-                        let result = voice_loop(&voice_state, &voice_config);
-                        if result.is_err() {
-                            voice_state.set_phase(RuntimePhase::Faulted);
-                            write_log(LogEvent::VoiceFault, LogOutcome::Failed);
-                        }
-                        result
+                        voice_loop(&voice_state, &voice_config);
                     })
                     .map_err(|_| {
                         DaemonError::new(DaemonErrorKind::Voice, "voice runtime could not start")
@@ -240,13 +235,11 @@ mod unix {
     }
 
     #[cfg(feature = "voice-runtime")]
-    fn join_voice(
-        voice: Option<thread::JoinHandle<Result<(), DaemonError>>>,
-    ) -> Result<(), DaemonError> {
+    fn join_voice(voice: Option<thread::JoinHandle<()>>) -> Result<(), DaemonError> {
         match voice {
             Some(voice) => voice.join().map_err(|_| {
                 DaemonError::new(DaemonErrorKind::Voice, "voice runtime stopped unexpectedly")
-            })?,
+            }),
             None => Ok(()),
         }
     }
@@ -257,7 +250,28 @@ mod unix {
     }
 
     #[cfg(feature = "voice-runtime")]
-    fn voice_loop(shared: &Arc<SharedState>, config: &VoiceConfig) -> Result<(), DaemonError> {
+    fn voice_loop(shared: &Arc<SharedState>, config: &VoiceConfig) {
+        let mut retry_delay = Duration::from_secs(1);
+        while !shared.stopping.load(Ordering::Acquire) {
+            match voice_session(shared, config) {
+                Ok(()) if shared.stopping.load(Ordering::Acquire) => return,
+                Ok(()) | Err(_) => {
+                    write_log(LogEvent::VoiceFault, LogOutcome::Failed);
+                    let deadline = std::time::Instant::now() + retry_delay;
+                    while std::time::Instant::now() < deadline {
+                        if shared.stopping.load(Ordering::Acquire) {
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                    retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(30));
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    fn voice_session(shared: &Arc<SharedState>, config: &VoiceConfig) -> Result<(), DaemonError> {
         let limits = AudioLimits::sbc();
         let cancellation = CancellationToken::new();
         let detector =
@@ -276,6 +290,7 @@ mod unix {
         let input = CpalInputSource::open_default(limits).map_err(voice_error)?;
         let capture_control = input.control();
         let mut source = ConvertingSource::new(input, STT_FORMAT, limits).map_err(voice_error)?;
+        write_log(LogEvent::VoiceListening, LogOutcome::Succeeded);
 
         while !shared.stopping.load(Ordering::Acquire) {
             let Some(chunk) = source.next_chunk(&cancellation).map_err(voice_error)? else {
@@ -601,6 +616,8 @@ mod unix {
         VoiceCommandTimedOut,
         #[cfg(feature = "voice-runtime")]
         VoiceFault,
+        #[cfg(feature = "voice-runtime")]
+        VoiceListening,
     }
 
     impl LogEvent {
@@ -621,6 +638,8 @@ mod unix {
                 Self::VoiceCommandTimedOut => "voice_command_timed_out",
                 #[cfg(feature = "voice-runtime")]
                 Self::VoiceFault => "voice_fault",
+                #[cfg(feature = "voice-runtime")]
+                Self::VoiceListening => "voice_listening",
             }
         }
     }

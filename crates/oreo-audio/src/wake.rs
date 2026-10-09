@@ -198,6 +198,14 @@ impl WakeIntentClassifier {
             identity_present,
         })
     }
+
+    /// Returns true only when the transcript consists entirely of one or more
+    /// reviewed identity renderings. Contextual phrases remain immediate turns.
+    #[must_use]
+    pub fn is_identity_only(&self, transcript: &str) -> bool {
+        let words = lexical_words(transcript);
+        !words.is_empty() && words.iter().all(|word| self.aliases.contains(word))
+    }
 }
 
 fn features(text: &str, aliases: &HashSet<String>) -> Vec<String> {
@@ -374,6 +382,10 @@ mod tests {
             .expect("phrase scores");
         assert!(named.addressed);
         assert!(named.identity_present);
+        assert!(classifier.is_identity_only("Oreo"));
+        assert!(classifier.is_identity_only("ordeal"));
+        assert!(!classifier.is_identity_only("wake up Oreo"));
+        assert!(!classifier.is_identity_only("Oreo set a timer"));
     }
 
     #[test]
