@@ -29,8 +29,9 @@ the acoustic model in an isolated local worker and never logs transcripts.
 Its optional `voice-agent` feature connects contextual commands to one
 persistent, cancellable Pollinations harness on an independent thread. Its
 prewarmed local Pocket TTS path starts speaking complete sentence fragments
-while the remaining answer is still streaming. Hardware GPIO is a later layer.
-The CLI keeps an explicit offline path and
+while the remaining answer is still streaming. Typed connector, hardware,
+routine, and presentation-only affect contracts are ready for concrete
+adapters. The CLI keeps an explicit offline path and
 enables the live Pollinations provider only when its credential is supplied
 through the process environment. GPT-5.4 Nano is the pinned default;
 `OREO_MODEL` can override it for controlled evaluations.
@@ -91,6 +92,8 @@ without exposing private content.
 - Credentials never enter local state, session journals, or logs.
 - The local runtime remains useful when every network feature fails.
 - Affect changes presentation, never truth, safety, or permissions.
+- Connectors, routines, and hardware calls all use the same typed approval
+  boundary; models never receive driver or credential handles.
 - Queues, model output, sessions, and tool output are bounded.
 
 ## Licence

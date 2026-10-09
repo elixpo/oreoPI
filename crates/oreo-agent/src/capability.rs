@@ -161,6 +161,45 @@ impl CapabilityRegistry {
         Ok(())
     }
 
+    /// Registers a cloud connector under the same typed policy as native tools.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-cloud, offline, or non-network connector metadata.
+    pub fn register_connector(
+        &mut self,
+        capability: Capability,
+        handler: Arc<dyn ToolHandler>,
+    ) -> Result<(), CapabilityError> {
+        if capability.location != CapabilityLocation::CloudService
+            || capability.works_offline
+            || !matches!(
+                capability.risk,
+                RiskClass::NetworkAccess | RiskClass::CredentialSensitive
+            )
+        {
+            return Err(CapabilityError::new("connector policy is invalid"));
+        }
+        self.register(capability, handler)
+    }
+
+    /// Registers a sensor or actuator without giving the model a hardware
+    /// handle. All calls still pass through Rust-owned approval policy.
+    ///
+    /// # Errors
+    ///
+    /// Rejects metadata that is not explicitly marked as device hardware.
+    pub fn register_hardware(
+        &mut self,
+        capability: Capability,
+        handler: Arc<dyn ToolHandler>,
+    ) -> Result<(), CapabilityError> {
+        if capability.location != CapabilityLocation::DeviceHardware {
+            return Err(CapabilityError::new("hardware policy is invalid"));
+        }
+        self.register(capability, handler)
+    }
+
     pub fn capabilities(&self) -> impl Iterator<Item = &Capability> {
         self.capabilities.values()
     }
@@ -325,6 +364,36 @@ mod tests {
             Err(CapabilityError::new(
                 "sensitive capabilities must always require confirmation"
             ))
+        );
+    }
+
+    #[test]
+    fn connector_and_hardware_helpers_enforce_location_boundaries() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = CapabilityRegistry::new(true, Arc::new(DenyApprovalUi));
+        let mut connector = capability("calendar_read");
+        connector.location = CapabilityLocation::CloudService;
+        connector.risk = RiskClass::NetworkAccess;
+        connector.confirmation = ConfirmationPolicy::WhenRisky;
+        connector.works_offline = false;
+        registry
+            .register_connector(connector, Arc::new(CountingHandler(calls.clone())))
+            .expect("connector registers");
+
+        let mut hardware = capability("temperature_read");
+        hardware.location = CapabilityLocation::DeviceHardware;
+        registry
+            .register_hardware(hardware, Arc::new(CountingHandler(calls)))
+            .expect("hardware registers");
+
+        let invalid = capability("not_a_connector");
+        assert!(
+            registry
+                .register_connector(
+                    invalid,
+                    Arc::new(CountingHandler(Arc::new(AtomicUsize::new(0))))
+                )
+                .is_err()
         );
     }
 }

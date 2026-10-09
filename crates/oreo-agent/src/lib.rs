@@ -24,6 +24,8 @@ use crumb_llm::{LlmProvider, TokenUsage};
 
 mod builtins;
 mod capability;
+mod mood;
+mod routine;
 
 pub use builtins::{DeviceStatus, register_device_status, register_memory_recall};
 pub use capability::{
@@ -31,6 +33,8 @@ pub use capability::{
     ConfirmationPolicy, DenyApprovalUi,
 };
 pub use crumb_agent::SteeringAction;
+pub use mood::{AffectState, DeliveryStyle};
+pub use routine::{Routine, RoutineError, RoutineRunner, RoutineStep};
 
 const EMBEDDED_STEERING_CUES: &str = include_str!("../../../config/voice-steering-cues.tsv");
 
