@@ -167,7 +167,7 @@ pub(crate) struct VoiceAgentIngress {
 
 impl VoiceAgentIngress {
     pub(crate) fn submit(&self, transcript: &str) -> Result<TurnSubmission, VoiceAgentError> {
-        let mut submission = {
+        let submission = {
             let mut controller = self
                 .controller
                 .lock()
@@ -177,10 +177,8 @@ impl VoiceAgentIngress {
                 .submit(action, transcript)
                 .map_err(|_| VoiceAgentError::new("voice agent queue rejected the command"))?
         };
-        let was_speaking = self.speech.is_speaking();
-        if was_speaking {
-            self.interrupt_speech()?;
-            submission = TurnSubmission::InterruptRequested;
+        if self.speech.is_speaking() {
+            let _ = self.interrupt_speech()?;
         }
         signal(&self.wake)?;
         Ok(submission)
@@ -198,7 +196,7 @@ impl VoiceAgentIngress {
             .map_err(|_| VoiceAgentError::new("speech cancellation failed"))?
             .as_ref()
         {
-            self.speech.cancel(cancellation);
+            let _ = self.speech.cancel(cancellation);
         }
         signal(&self.wake)
     }
@@ -210,7 +208,7 @@ impl VoiceAgentIngress {
             .lock()
             .map_err(|_| VoiceAgentError::new("speech cancellation failed"))?;
         if let Some(previous) = active.as_ref() {
-            self.speech.cancel(previous);
+            let _ = self.speech.cancel(previous);
         }
         self.speech
             .speak(
@@ -226,7 +224,7 @@ impl VoiceAgentIngress {
         self.speech.resembles_output(transcript)
     }
 
-    pub(crate) fn interrupt_speech(&self) -> Result<(), VoiceAgentError> {
+    pub(crate) fn interrupt_speech(&self) -> Result<bool, VoiceAgentError> {
         let active = self
             .active_speech
             .lock()
@@ -234,9 +232,9 @@ impl VoiceAgentIngress {
         if let Some(cancellation) = active.as_ref()
             && self.speech.is_speaking()
         {
-            self.speech.cancel(cancellation);
+            return Ok(self.speech.cancel(cancellation));
         }
-        Ok(())
+        Ok(false)
     }
 
     pub(crate) fn phase(&self) -> ConversationPhase {
@@ -450,8 +448,10 @@ fn agent_loop(
         };
         let speech_cancellation = SpeechCancellation::new();
         if let Ok(mut active) = context.active_speech.lock() {
-            if let Some(previous) = active.as_ref() {
-                context.speech.cancel(previous);
+            if let Some(previous) = active.as_ref()
+                && context.speech.is_speaking()
+            {
+                let _ = context.speech.cancel(previous);
             }
             *active = Some(speech_cancellation.clone());
         } else {

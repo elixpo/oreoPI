@@ -446,7 +446,9 @@ mod unix {
     fn handle_possible_barge_in(config: &VoiceConfig, transcript: &str) {
         if let Some(agent) = &config.agent_ingress
             && !agent.resembles_output(transcript)
-            && agent.interrupt_speech().is_ok()
+            && agent
+                .interrupt_speech()
+                .is_ok_and(|interrupted| interrupted)
         {
             write_log(LogEvent::VoiceBargeIn, LogOutcome::Succeeded);
         }

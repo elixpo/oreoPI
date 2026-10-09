@@ -66,9 +66,10 @@ impl SpeechIngress {
         }
     }
 
-    pub(crate) fn cancel(&self, cancellation: &CancellationToken) {
+    pub(crate) fn cancel(&self, cancellation: &CancellationToken) -> bool {
         cancellation.cancel();
         self.interrupt.store(true, Ordering::Release);
+        self.speaking.swap(false, Ordering::AcqRel)
     }
 
     pub(crate) fn is_speaking(&self) -> bool {
@@ -248,6 +249,7 @@ fn speech_loop(
         match result {
             Ok(()) => {}
             Err(error) if error.kind == AudioErrorKind::Cancelled => {
+                context.interrupt.store(false, Ordering::Release);
                 output.stop();
                 output_active = false;
                 context.speaking.store(false, Ordering::Release);
@@ -436,9 +438,31 @@ impl std::error::Error for SpeechRuntimeError {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
 
-    use super::PlaybackEchoGuard;
+    use oreo_core::CancellationToken;
+
+    use super::{PlaybackEchoGuard, SpeechIngress};
+
+    #[test]
+    fn speech_cancellation_is_one_shot_and_changes_phase_immediately() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let speaking = Arc::new(AtomicBool::new(true));
+        let ingress = SpeechIngress {
+            sender,
+            interrupt: Arc::new(AtomicBool::new(false)),
+            speaking: speaking.clone(),
+            echo: Arc::new(Mutex::new(PlaybackEchoGuard::default())),
+        };
+        let cancellation = CancellationToken::new();
+
+        assert!(ingress.cancel(&cancellation));
+        assert!(cancellation.is_cancelled());
+        assert!(!speaking.load(Ordering::Acquire));
+        assert!(!ingress.cancel(&cancellation));
+    }
 
     #[test]
     fn echo_guard_rejects_output_but_preserves_barge_in() {
