@@ -97,6 +97,28 @@ train	ignore	show me a picture of oreo
 train	ignore	we discussed the history of oreo
 train	ignore	the taste of oreo is distinctive
 train	ignore	she bought a box of oreos
+train	ignore	i am speaking to oreo
+train	ignore	i was talking to oreo
+train	ignore	she is speaking to oreo
+train	ignore	he was talking with oreo
+train	ignore	we are discussing oreo
+train	ignore	we asked oreo about it earlier
+train	ignore	tell oreo that i will be late
+train	ignore	i told oreo to set a timer
+train	ignore	she asked oreo to check the weather
+train	ignore	he wants oreo to turn off the lamp
+train	ignore	oreo is listening to our conversation
+train	ignore	did you talk to oreo yesterday
+train	ignore	this story is about oreo
+train	ignore	i said the word oreo
+train	ignore	they mentioned oreo during the meeting
+train	ignore	did you mean oreo
+train	ignore	are you talking to oreo
+train	ignore	i think oreo can help us
+train	ignore	could oreo help them
+train	ignore	not you oreo
+train	ignore	someone said oreo
+train	ignore	ask oreo when you get home
 test	wake	oreo could you listen to me
 test	wake	wake up orio
 test	wake	are you listening oreo
@@ -117,3 +139,9 @@ test	ignore	please play the audio recording
 test	ignore	the audio quality is excellent
 test	ignore	we need more oreo packets
 test	ignore	he reviewed the audio settings
+test	ignore	i am speaking with oreo right now
+test	ignore	she told oreo to remind her tomorrow
+test	ignore	we talked to oreo about the timer
+test	ignore	he asked whether oreo was listening
+test	ignore	are they speaking with oreo
+test	ignore	i wonder whether oreo could help

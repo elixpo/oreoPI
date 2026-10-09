@@ -395,6 +395,9 @@ mod unix {
                         let _ = agent.end_conversation();
                     }
                 }
+                Some(WakePipelineEvent::ClarificationNeeded) => {
+                    write_log(LogEvent::VoiceClarificationNeeded, LogOutcome::Denied);
+                }
                 None => {}
             }
         }
@@ -711,6 +714,8 @@ mod unix {
         #[cfg(feature = "voice-runtime")]
         VoiceCommandTimedOut,
         #[cfg(feature = "voice-runtime")]
+        VoiceClarificationNeeded,
+        #[cfg(feature = "voice-runtime")]
         VoiceConversationEnded,
         #[cfg(feature = "voice-runtime")]
         VoiceFault,
@@ -750,6 +755,8 @@ mod unix {
                 Self::VoiceCommandReady => "voice_command_ready",
                 #[cfg(feature = "voice-runtime")]
                 Self::VoiceCommandTimedOut => "voice_command_timed_out",
+                #[cfg(feature = "voice-runtime")]
+                Self::VoiceClarificationNeeded => "voice_clarification_needed",
                 #[cfg(feature = "voice-runtime")]
                 Self::VoiceConversationEnded => "voice_conversation_ended",
                 #[cfg(feature = "voice-runtime")]

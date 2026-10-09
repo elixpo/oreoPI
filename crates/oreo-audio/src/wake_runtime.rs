@@ -3,7 +3,7 @@ use oreo_core::CancellationToken;
 use crate::{
     AudioError, AudioErrorKind, AudioLimits, ConversationDirective, ConversationLanguage,
     EnergyVad, OpenWakeWordDetector, PcmChunk, STT_FORMAT, StreamingTranscriber, VadConfig,
-    VadDecision, VoskTranscriber, WakeAudioWindow, WakeIntentClassifier,
+    VadDecision, VoskTranscriber, WakeAudioWindow, WakeIntentClassifier, WakeIntentDisposition,
 };
 
 const COOLDOWN_SAMPLES: usize = 8_000;
@@ -16,6 +16,7 @@ pub enum WakePipelineEvent {
     CommandReady { transcript: String },
     CommandTimedOut,
     ConversationEnded,
+    ClarificationNeeded,
 }
 
 enum RuntimeState {
@@ -269,7 +270,8 @@ impl WakeCommandPipeline {
             .then(|| self.classifier.classify(&transcript))
             .transpose()?;
         self.wake_window.clear();
-        if decision.is_some_and(|decision| decision.addressed)
+        let disposition = decision.map(|decision| decision.disposition);
+        if disposition == Some(WakeIntentDisposition::Addressed)
             && self.classifier.is_identity_only(&transcript)
         {
             self.transcriber.begin(STT_FORMAT)?;
@@ -279,8 +281,13 @@ impl WakeCommandPipeline {
                 speech_started: false,
             };
             Ok(Some(WakePipelineEvent::WakeAccepted { score }))
-        } else if decision.is_some_and(|decision| decision.addressed) {
+        } else if disposition == Some(WakeIntentDisposition::Addressed) {
             self.complete_transcript(transcript, score, cancellation)
+        } else if disposition == Some(WakeIntentDisposition::Clarify) {
+            self.state = RuntimeState::Cooldown {
+                samples_left: COOLDOWN_SAMPLES,
+            };
+            Ok(Some(WakePipelineEvent::ClarificationNeeded))
         } else {
             self.state = RuntimeState::Cooldown {
                 samples_left: COOLDOWN_SAMPLES,
@@ -325,6 +332,23 @@ impl WakeCommandPipeline {
     ) -> Result<Option<WakePipelineEvent>, AudioError> {
         let transcript = self.transcriber.finish(cancellation)?;
         if !transcript.trim().is_empty() {
+            if self.classifier.mentions_spoken_identity(&transcript) {
+                let disposition = self.classifier.classify(&transcript)?.disposition;
+                if disposition != WakeIntentDisposition::Addressed {
+                    self.wake_window.clear();
+                    if session_samples_left == 0 {
+                        self.detector.reset(cancellation)?;
+                        self.state = RuntimeState::Listening;
+                    } else {
+                        self.state = RuntimeState::Engaged {
+                            vad: EnergyVad::new(VadConfig::sbc())?,
+                            samples_left: session_samples_left,
+                        };
+                    }
+                    return Ok((disposition == WakeIntentDisposition::Clarify)
+                        .then_some(WakePipelineEvent::ClarificationNeeded));
+                }
+            }
             return self.complete_transcript(transcript, 0.0, cancellation);
         }
         self.wake_window.clear();

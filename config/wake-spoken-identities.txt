@@ -1,0 +1,5 @@
+# Literal identity words used to distinguish direct address from reported mention.
+oreo
+oreos
+orio
+

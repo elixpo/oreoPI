@@ -104,6 +104,13 @@ An engaged VAD event that produces no Vosk text is treated as ambient noise. It
 returns to the remaining conversation window without emitting a command timeout
 or resetting the session.
 
+Cold attention is a three-way local decision. Direct address proceeds, reported
+or third-person mentions such as “I am speaking to Oreo” remain silent, and a
+narrow ambiguous score emits `voice_clarification_needed` without entering the
+agent queue. The reviewed mention examples live beside the wake corpus. Pocket
+TTS will turn that event into a fixed local “Were you talking to me?” prompt;
+the ambiguity itself never causes a Pollinations request.
+
 The maximum utterance remains 30 seconds. Rejected cold candidates use a 500 ms
 reset cooldown to prevent one utterance from triggering twice. A bounded
 supervisor restarts the local worker and microphone session with backoff after

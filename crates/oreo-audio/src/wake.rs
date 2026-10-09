@@ -7,8 +7,10 @@ use crate::{AudioError, AudioErrorKind, AudioFormat, PcmChunk, STT_FORMAT};
 const MAX_WAKE_TEXT_BYTES: usize = 512;
 const IDENTITY_INTENT_THRESHOLD: f64 = 1.0;
 const CONTEXT_ONLY_INTENT_THRESHOLD: f64 = 7.0;
+const IDENTITY_CLARIFICATION_THRESHOLD: f64 = 0.25;
 const EMBEDDED_CORPUS: &str = include_str!("../../../config/wake-intent-corpus.tsv");
 const EMBEDDED_ALIASES: &str = include_str!("../../../config/wake-identity-aliases.txt");
+const EMBEDDED_SPOKEN_IDENTITIES: &str = include_str!("../../../config/wake-spoken-identities.txt");
 
 /// Bounded rolling PCM retained only while listening for a possible wake intent.
 pub struct WakeAudioWindow {
@@ -89,11 +91,20 @@ pub struct WakeIntentDecision {
     pub addressed: bool,
     pub score: f64,
     pub identity_present: bool,
+    pub disposition: WakeIntentDisposition,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WakeIntentDisposition {
+    Ignore,
+    Clarify,
+    Addressed,
 }
 
 /// Tiny Bernoulli Naive Bayes classifier trained from the reviewed corpus.
 pub struct WakeIntentClassifier {
     aliases: HashSet<String>,
+    spoken_identities: HashSet<String>,
     weights: HashMap<String, [u32; 2]>,
     document_totals: [u32; 2],
 }
@@ -105,21 +116,37 @@ impl WakeIntentClassifier {
     ///
     /// Fails closed if the embedded corpus is malformed or incomplete.
     pub fn embedded() -> Result<Self, AudioError> {
-        Self::train(EMBEDDED_CORPUS, EMBEDDED_ALIASES)
+        Self::train(
+            EMBEDDED_CORPUS,
+            EMBEDDED_ALIASES,
+            EMBEDDED_SPOKEN_IDENTITIES,
+        )
     }
 
-    fn train(corpus: &str, aliases: &str) -> Result<Self, AudioError> {
+    fn train(corpus: &str, aliases: &str, spoken_identities: &str) -> Result<Self, AudioError> {
         let aliases: HashSet<String> = aliases
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .map(str::to_owned)
             .collect();
-        if aliases.is_empty() || aliases.len() > 16 {
+        let spoken_identities: HashSet<String> = spoken_identities
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_owned)
+            .collect();
+        if aliases.is_empty()
+            || aliases.len() > 16
+            || spoken_identities.is_empty()
+            || spoken_identities.len() > aliases.len()
+            || !spoken_identities.is_subset(&aliases)
+        {
             return Err(classifier_error());
         }
         let mut classifier = Self {
             aliases,
+            spoken_identities,
             weights: HashMap::new(),
             document_totals: [0; 2],
         };
@@ -192,10 +219,18 @@ impl WakeIntentClassifier {
         } else {
             CONTEXT_ONLY_INTENT_THRESHOLD
         };
+        let disposition = if score >= threshold {
+            WakeIntentDisposition::Addressed
+        } else if identity_present && score >= IDENTITY_CLARIFICATION_THRESHOLD {
+            WakeIntentDisposition::Clarify
+        } else {
+            WakeIntentDisposition::Ignore
+        };
         Ok(WakeIntentDecision {
-            addressed: score >= threshold,
+            addressed: disposition == WakeIntentDisposition::Addressed,
             score,
             identity_present,
+            disposition,
         })
     }
 
@@ -205,6 +240,15 @@ impl WakeIntentClassifier {
     pub fn is_identity_only(&self, transcript: &str) -> bool {
         let words = lexical_words(transcript);
         !words.is_empty() && words.iter().all(|word| self.aliases.contains(word))
+    }
+
+    /// Returns true for literal Oreo identity words, excluding acoustic-only
+    /// Vosk corrections such as `audio` and `ordeal`.
+    #[must_use]
+    pub fn mentions_spoken_identity(&self, transcript: &str) -> bool {
+        lexical_words(transcript)
+            .iter()
+            .any(|word| self.spoken_identities.contains(word))
     }
 }
 
@@ -266,7 +310,7 @@ mod tests {
 
     use crate::{AudioErrorKind, AudioFormat, PcmChunk, STT_FORMAT};
 
-    use super::{WakeAudioWindow, WakeIntentClassifier};
+    use super::{WakeAudioWindow, WakeIntentClassifier, WakeIntentDisposition};
 
     #[test]
     fn rolling_audio_window_forgets_oldest_samples() {
@@ -386,6 +430,41 @@ mod tests {
         assert!(classifier.is_identity_only("ordeal"));
         assert!(!classifier.is_identity_only("wake up Oreo"));
         assert!(!classifier.is_identity_only("Oreo set a timer"));
+        assert!(classifier.mentions_spoken_identity("I am talking to Oreo"));
+        assert!(!classifier.mentions_spoken_identity("play the audio file"));
+    }
+
+    #[test]
+    fn embedded_classifier_separates_mentions_and_ambiguity_from_addressing() {
+        let classifier = WakeIntentClassifier::embedded().expect("classifier trains");
+        for mention in [
+            "I am speaking to Oreo",
+            "I told Oreo to set a timer",
+            "Are you talking to Oreo",
+        ] {
+            assert_eq!(
+                classifier
+                    .classify(mention)
+                    .expect("phrase scores")
+                    .disposition,
+                WakeIntentDisposition::Ignore,
+                "expected ignored mention: {mention}"
+            );
+        }
+        assert_eq!(
+            classifier
+                .classify("thanks Oreo")
+                .expect("phrase scores")
+                .disposition,
+            WakeIntentDisposition::Clarify
+        );
+        assert_eq!(
+            classifier
+                .classify("Oreo, can you hear me?")
+                .expect("phrase scores")
+                .disposition,
+            WakeIntentDisposition::Addressed
+        );
     }
 
     #[test]
