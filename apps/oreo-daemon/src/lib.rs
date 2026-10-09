@@ -30,8 +30,9 @@ mod unix {
 
     #[cfg(feature = "voice-runtime")]
     use oreo_audio::{
-        AudioLimits, AudioSource, ConversationAudioPhase, ConvertingSource, CpalInputSource,
-        OpenWakeWordConfig, OpenWakeWordDetector, STT_FORMAT, VoskTranscriber, WakeCommandPipeline,
+        AudioError, AudioLimits, AudioSource, ConversationAudioPhase, ConvertingSource,
+        CpalInputSource, EnergyVad, OpenWakeWordConfig, OpenWakeWordDetector, PcmChunk, STT_FORMAT,
+        StreamingTranscriber, VadConfig, VadDecision, VoskTranscriber, WakeCommandPipeline,
         WakePipelineEvent,
     };
     #[cfg(feature = "voice-runtime")]
@@ -57,6 +58,68 @@ mod unix {
         agent_config: Option<VoiceAgentConfig>,
         #[cfg(feature = "voice-agent")]
         agent_ingress: Option<VoiceAgentIngress>,
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    struct DebugTranscriptProbe {
+        transcriber: VoskTranscriber,
+        vad: EnergyVad,
+        last_partial: String,
+        samples: usize,
+        max_samples: usize,
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    impl DebugTranscriptProbe {
+        fn from_environment(root: &Path, limits: AudioLimits) -> Result<Option<Self>, DaemonError> {
+            if !boolean_environment("OREO_VOICE_DEBUG_TRANSCRIPTS", DaemonErrorKind::Voice)? {
+                return Ok(None);
+            }
+            let mut transcriber = VoskTranscriber::load(
+                root.join("models/cache/vosk-model-small-en-us-0.15"),
+                limits,
+            )
+            .map_err(voice_error)?;
+            transcriber.begin(STT_FORMAT).map_err(voice_error)?;
+            write_debug_event("transcript_debug_enabled", None);
+            Ok(Some(Self {
+                transcriber,
+                vad: EnergyVad::new(VadConfig::sbc()).map_err(voice_error)?,
+                last_partial: String::new(),
+                samples: 0,
+                max_samples: usize::from(limits.max_capture_seconds).saturating_mul(16_000),
+            }))
+        }
+
+        fn process(
+            &mut self,
+            chunk: &PcmChunk,
+            cancellation: &CancellationToken,
+        ) -> Result<(), AudioError> {
+            self.samples = self.samples.saturating_add(chunk.samples().len());
+            self.transcriber.push(chunk, cancellation)?;
+            let live = self.transcriber.live_transcript()?;
+            if !live.trim().is_empty() && live != self.last_partial {
+                write_debug_event("live_transcript", Some(&live));
+                live.clone_into(&mut self.last_partial);
+            }
+            if self.vad.observe(chunk) == VadDecision::Endpoint || self.samples >= self.max_samples
+            {
+                let final_text = self.transcriber.finish(cancellation)?;
+                if !final_text.trim().is_empty() {
+                    write_debug_event("final_transcript", Some(&final_text));
+                }
+                self.transcriber.begin(STT_FORMAT)?;
+                self.vad = EnergyVad::new(VadConfig::sbc())?;
+                self.last_partial.clear();
+                self.samples = 0;
+            }
+            Ok(())
+        }
+
+        fn shutdown(&mut self) {
+            self.transcriber.abort();
+        }
     }
 
     impl VoiceConfig {
@@ -353,6 +416,8 @@ mod unix {
         .map_err(voice_error)?;
         let mut pipeline =
             WakeCommandPipeline::new(detector, transcriber, limits).map_err(voice_error)?;
+        let mut transcript_probe =
+            DebugTranscriptProbe::from_environment(&config.repository_root, limits)?;
         pipeline.prewarm(&cancellation).map_err(voice_error)?;
         let input = CpalInputSource::open_default(limits).map_err(voice_error)?;
         let capture_control = input.control();
@@ -365,6 +430,9 @@ mod unix {
             let Some(chunk) = source.next_chunk(&cancellation).map_err(voice_error)? else {
                 break;
             };
+            if let Some(probe) = &mut transcript_probe {
+                probe.process(&chunk, &cancellation).map_err(voice_error)?;
+            }
             #[cfg(feature = "voice-agent")]
             update_conversation_phase(config, &mut pipeline, &mut last_phase);
             match pipeline
@@ -375,36 +443,7 @@ mod unix {
                     write_log(LogEvent::WakeAccepted, LogOutcome::Succeeded);
                 }
                 Some(WakePipelineEvent::CommandReady { transcript }) => {
-                    if transcript.trim().is_empty() {
-                        return Err(DaemonError::new(
-                            DaemonErrorKind::Voice,
-                            "voice runtime produced an empty command",
-                        ));
-                    }
-                    #[cfg(feature = "voice-agent")]
-                    if config
-                        .agent_ingress
-                        .as_ref()
-                        .is_some_and(|agent| agent.resembles_output(&transcript))
-                    {
-                        write_log(LogEvent::VoiceEchoRejected, LogOutcome::Denied);
-                        continue;
-                    }
-                    write_log(LogEvent::VoiceCommandReady, LogOutcome::Succeeded);
-                    #[cfg(feature = "voice-agent")]
-                    if let Some(agent) = &config.agent_ingress {
-                        match agent.submit(&transcript) {
-                            Ok(oreo_agent::TurnSubmission::Queued) => {
-                                write_log(LogEvent::AgentTurnQueued, LogOutcome::Succeeded);
-                            }
-                            Ok(oreo_agent::TurnSubmission::InterruptRequested) => {
-                                write_log(LogEvent::AgentTurnInterrupted, LogOutcome::Succeeded);
-                            }
-                            Err(_) => {
-                                write_log(LogEvent::AgentTurnRejected, LogOutcome::Denied);
-                            }
-                        }
-                    }
+                    handle_voice_command(config, &transcript)?;
                 }
                 Some(WakePipelineEvent::CommandTimedOut) => {
                     write_log(LogEvent::VoiceCommandTimedOut, LogOutcome::Denied);
@@ -430,6 +469,9 @@ mod unix {
             }
         }
         cancellation.cancel();
+        if let Some(probe) = &mut transcript_probe {
+            probe.shutdown();
+        }
         capture_control.stop();
         pipeline.shutdown();
         let snapshot = source.into_inner().stats();
@@ -440,6 +482,51 @@ mod unix {
             ));
         }
         Ok(())
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    fn handle_voice_command(config: &VoiceConfig, transcript: &str) -> Result<(), DaemonError> {
+        if transcript.trim().is_empty() {
+            return Err(DaemonError::new(
+                DaemonErrorKind::Voice,
+                "voice runtime produced an empty command",
+            ));
+        }
+        #[cfg(feature = "voice-agent")]
+        if config
+            .agent_ingress
+            .as_ref()
+            .is_some_and(|agent| agent.resembles_output(transcript))
+        {
+            write_log(LogEvent::VoiceEchoRejected, LogOutcome::Denied);
+            return Ok(());
+        }
+        write_log(LogEvent::VoiceCommandReady, LogOutcome::Succeeded);
+        #[cfg(feature = "voice-agent")]
+        if let Some(agent) = &config.agent_ingress {
+            match agent.submit(transcript) {
+                Ok(oreo_agent::TurnSubmission::Queued) => {
+                    write_log(LogEvent::AgentTurnQueued, LogOutcome::Succeeded);
+                }
+                Ok(oreo_agent::TurnSubmission::InterruptRequested) => {
+                    write_log(LogEvent::AgentTurnInterrupted, LogOutcome::Succeeded);
+                }
+                Err(_) => write_log(LogEvent::AgentTurnRejected, LogOutcome::Denied),
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    fn write_debug_event(event: &str, transcript: Option<&str>) {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "component": "oreo-daemon-debug",
+                "event": event,
+                "transcript": transcript,
+            })
+        );
     }
 
     #[cfg(feature = "voice-agent")]
@@ -1209,13 +1296,17 @@ mod unix {
     }
 
     fn voice_enabled() -> Result<bool, DaemonError> {
-        match env::var("OREO_VOICE_ENABLED") {
+        boolean_environment("OREO_VOICE_ENABLED", DaemonErrorKind::Voice)
+    }
+
+    fn boolean_environment(name: &str, error_kind: DaemonErrorKind) -> Result<bool, DaemonError> {
+        match env::var(name) {
             Err(env::VarError::NotPresent) => Ok(false),
             Ok(value) if matches!(value.as_str(), "1" | "true") => Ok(true),
             Ok(value) if matches!(value.as_str(), "0" | "false") => Ok(false),
             Ok(_) | Err(env::VarError::NotUnicode(_)) => Err(DaemonError::new(
-                DaemonErrorKind::Voice,
-                "OREO_VOICE_ENABLED must be true, false, 1, or 0",
+                error_kind,
+                "boolean environment setting must be true, false, 1, or 0",
             )),
         }
     }

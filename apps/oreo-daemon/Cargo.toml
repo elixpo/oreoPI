@@ -23,10 +23,10 @@ oreo-agent = { path = "../../crates/oreo-agent", optional = true }
 oreo-core = { path = "../../crates/oreo-core", optional = true }
 oreo-local-api = { path = "../../crates/oreo-local-api" }
 oreo-state = { path = "../../crates/oreo-state" }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "time"], optional = true }
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]
