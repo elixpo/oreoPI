@@ -71,6 +71,9 @@ pub struct SpeechChunker {
     max_buffer_bytes: usize,
 }
 
+const TARGET_SPEECH_CHUNK_BYTES: usize = 160;
+const MIN_SPEECH_CHUNK_BYTES: usize = 80;
+
 impl SpeechChunker {
     /// Creates a chunker using the response-buffer bound in the audio profile.
     ///
@@ -99,7 +102,13 @@ impl SpeechChunker {
         }
         self.pending.push_str(delta);
         let mut chunks = Vec::new();
-        while let Some(end) = speakable_end(&self.pending) {
+        while let Some(end) = speakable_end(&self.pending).or_else(|| {
+            soft_chunk_end(
+                &self.pending,
+                TARGET_SPEECH_CHUNK_BYTES,
+                MIN_SPEECH_CHUNK_BYTES,
+            )
+        }) {
             let remainder = self.pending.split_off(end);
             let chunk = std::mem::replace(&mut self.pending, remainder);
             let chunk = chunk.trim();
@@ -128,6 +137,17 @@ fn speakable_end(text: &str) -> Option<usize> {
     text.char_indices().find_map(|(index, character)| {
         matches!(character, '.' | '?' | '!' | ';' | '\n').then(|| index + character.len_utf8())
     })
+}
+
+fn soft_chunk_end(text: &str, target: usize, minimum: usize) -> Option<usize> {
+    if text.len() < target {
+        return None;
+    }
+    text.char_indices()
+        .take_while(|(index, _)| *index <= target)
+        .filter(|(index, character)| *index >= minimum && character.is_whitespace())
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
 }
 
 #[cfg(test)]
@@ -268,6 +288,16 @@ mod tests {
         );
         assert_eq!(chunker.finish().as_deref(), Some("Second sentence"));
         assert_eq!(chunker.pending_bytes(), 0);
+    }
+
+    #[test]
+    fn streamed_response_soft_chunks_before_final_punctuation() {
+        let mut chunker = SpeechChunker::new(AudioLimits::sbc()).expect("chunker starts");
+        let text = "This deliberately long response starts speaking before the model has emitted punctuation and continues with enough ordinary words to cross the bounded streaming threshold without waiting for the full answer";
+        let chunks = chunker.push(text).expect("response streams");
+        assert_eq!(chunks.len(), 1);
+        assert!((80..=160).contains(&chunks[0].len()));
+        assert!(chunker.pending_bytes() > 0);
     }
 
     #[test]

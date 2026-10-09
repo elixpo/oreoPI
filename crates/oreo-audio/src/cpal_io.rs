@@ -39,6 +39,7 @@ pub struct AudioIoSnapshot {
     pub captured_chunks: u64,
     pub dropped_chunks: u64,
     pub played_samples: u64,
+    pub content_samples_played: u64,
     pub queued_samples: u64,
     pub underrun_callbacks: u64,
     pub stream_errors: u64,
@@ -49,6 +50,7 @@ struct IoCounters {
     captured_chunks: AtomicU64,
     dropped_chunks: AtomicU64,
     played_samples: AtomicU64,
+    content_samples_played: AtomicU64,
     queued_samples: AtomicU64,
     underrun_callbacks: AtomicU64,
     stream_errors: AtomicU64,
@@ -60,6 +62,7 @@ impl IoCounters {
             captured_chunks: self.captured_chunks.load(Ordering::Relaxed),
             dropped_chunks: self.dropped_chunks.load(Ordering::Relaxed),
             played_samples: self.played_samples.load(Ordering::Relaxed),
+            content_samples_played: self.content_samples_played.load(Ordering::Acquire),
             queued_samples: self.queued_samples.load(Ordering::Acquire),
             underrun_callbacks: self.underrun_callbacks.load(Ordering::Relaxed),
             stream_errors: self.stream_errors.load(Ordering::Relaxed),
@@ -631,6 +634,9 @@ impl PlaybackBuffer {
             Ordering::Relaxed,
         );
         subtract_queued(&self.counters.queued_samples, consumed);
+        self.counters
+            .content_samples_played
+            .fetch_add(consumed, Ordering::Release);
         if underrun {
             self.counters
                 .underrun_callbacks
@@ -694,5 +700,6 @@ mod tests {
         assert_eq!(output, [10, 20, 0, 0]);
         assert_eq!(counters.snapshot().underrun_callbacks, 1);
         assert_eq!(counters.snapshot().queued_samples, 0);
+        assert_eq!(counters.snapshot().content_samples_played, 2);
     }
 }

@@ -834,6 +834,8 @@ mod unix {
         #[cfg(feature = "voice-agent")]
         SpeechFinished,
         #[cfg(feature = "voice-agent")]
+        SpeechGenerating,
+        #[cfg(feature = "voice-agent")]
         SpeechReady,
         #[cfg(feature = "voice-agent")]
         SpeechStarted,
@@ -887,6 +889,8 @@ mod unix {
                 Self::SpeechFailed => "speech_failed",
                 #[cfg(feature = "voice-agent")]
                 Self::SpeechFinished => "speech_finished",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechGenerating => "speech_generating",
                 #[cfg(feature = "voice-agent")]
                 Self::SpeechReady => "speech_ready",
                 #[cfg(feature = "voice-agent")]
@@ -961,6 +965,7 @@ mod unix {
     fn speech_event(event: SpeechRuntimeEvent) {
         let (event, outcome) = match event {
             SpeechRuntimeEvent::Ready => (LogEvent::SpeechReady, LogOutcome::Succeeded),
+            SpeechRuntimeEvent::Generating => (LogEvent::SpeechGenerating, LogOutcome::Succeeded),
             SpeechRuntimeEvent::Started => (LogEvent::SpeechStarted, LogOutcome::Succeeded),
             SpeechRuntimeEvent::Finished => (LogEvent::SpeechFinished, LogOutcome::Succeeded),
             SpeechRuntimeEvent::Cancelled => (LogEvent::SpeechCancelled, LogOutcome::Denied),

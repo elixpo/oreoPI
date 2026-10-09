@@ -20,6 +20,7 @@ const ECHO_TAIL: Duration = Duration::from_millis(750);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SpeechRuntimeEvent {
     Ready,
+    Generating,
     Started,
     Finished,
     Cancelled,
@@ -189,6 +190,7 @@ fn speech_loop(
                     if let Ok(mut echo) = context.echo.lock() {
                         echo.mark_finished();
                     }
+                    (context.emit)(SpeechRuntimeEvent::Finished);
                 }
                 continue;
             }
@@ -197,14 +199,16 @@ fn speech_loop(
         if request.cancellation.is_cancelled() {
             continue;
         }
-        context.speaking.store(true, Ordering::Release);
-        (context.emit)(SpeechRuntimeEvent::Started);
+        let was_idle = !context.speaking.swap(true, Ordering::AcqRel);
+        (context.emit)(SpeechRuntimeEvent::Generating);
         if !output_active && output.begin(native_format).is_err() {
             (context.emit)(SpeechRuntimeEvent::Failed);
             continue;
         }
         output_active = true;
         let mut converter = None;
+        let mut playback_started = false;
+        let mut lead_in_pending = was_idle;
         let result = synthesizer.synthesize(&request.text, &request.cancellation, &mut |chunk| {
             let converter = match &mut converter {
                 Some(converter) => converter,
@@ -215,19 +219,33 @@ fn speech_loop(
                 )?),
             };
             converter.push(&chunk, &request.cancellation, &mut |converted| {
-                write_with_backpressure(&mut output, &converted, &request.cancellation)
+                write_playback_chunk(
+                    &mut output,
+                    &converted,
+                    &request.cancellation,
+                    &mut lead_in_pending,
+                    &mut playback_started,
+                    context.emit,
+                )
             })
         });
         let result = result.and_then(|()| {
             if let Some(converter) = &mut converter {
                 converter.finish(&request.cancellation, &mut |converted| {
-                    write_with_backpressure(&mut output, &converted, &request.cancellation)
+                    write_playback_chunk(
+                        &mut output,
+                        &converted,
+                        &request.cancellation,
+                        &mut lead_in_pending,
+                        &mut playback_started,
+                        context.emit,
+                    )
                 })?;
             }
             Ok(())
         });
         match result {
-            Ok(()) => (context.emit)(SpeechRuntimeEvent::Finished),
+            Ok(()) => {}
             Err(error) if error.kind == AudioErrorKind::Cancelled => {
                 output.stop();
                 output_active = false;
@@ -320,6 +338,59 @@ fn write_with_backpressure(
             Err(error) => return Err(error),
         }
     }
+}
+
+fn write_playback_chunk(
+    output: &mut CpalOutput,
+    chunk: &oreo_audio::PcmChunk,
+    cancellation: &CancellationToken,
+    lead_in_pending: &mut bool,
+    playback_started: &mut bool,
+    emit: fn(SpeechRuntimeEvent),
+) -> Result<(), oreo_audio::AudioError> {
+    let played_before = output.stats().content_samples_played;
+    if *lead_in_pending {
+        let format = chunk.format();
+        let frames = usize::try_from(format.sample_rate_hz)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(60)
+            / 1_000;
+        let samples = frames.saturating_mul(usize::from(format.channels));
+        let silence = oreo_audio::PcmChunk::new(format, vec![0; samples])?;
+        write_with_backpressure(output, &silence, cancellation)?;
+        *lead_in_pending = false;
+    }
+    write_with_backpressure(output, chunk, cancellation)?;
+    if !*playback_started {
+        wait_for_playback(output, played_before, cancellation)?;
+        *playback_started = true;
+        emit(SpeechRuntimeEvent::Started);
+    }
+    Ok(())
+}
+
+fn wait_for_playback(
+    output: &CpalOutput,
+    played_before: u64,
+    cancellation: &CancellationToken,
+) -> Result<(), oreo_audio::AudioError> {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while output.stats().content_samples_played == played_before {
+        if cancellation.is_cancelled() {
+            return Err(oreo_audio::AudioError::new(
+                AudioErrorKind::Cancelled,
+                "audio playback was cancelled",
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(oreo_audio::AudioError::new(
+                AudioErrorKind::Backend,
+                "speaker did not consume audio",
+            ));
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

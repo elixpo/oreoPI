@@ -303,7 +303,9 @@ pub struct AudioError {
 }
 
 impl AudioError {
-    pub(crate) const fn new(kind: AudioErrorKind, message: &'static str) -> Self {
+    /// Creates a typed, redacted audio-boundary error.
+    #[must_use]
+    pub const fn new(kind: AudioErrorKind, message: &'static str) -> Self {
         Self { kind, message }
     }
 }

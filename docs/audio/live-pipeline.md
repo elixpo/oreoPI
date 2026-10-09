@@ -144,8 +144,10 @@ another terminal with `cargo run -p elixpo-cli -- daemon stop`.
 
 With `voice-agent`, commands enter a bounded eight-message controller on a
 separate network thread. Response deltas are split at natural sentence
-boundaries and sent immediately to the prewarmed Pocket TTS worker, so playback
-starts before the model completes its full answer. A new accepted utterance
+boundaries—or a bounded 80–160 byte soft boundary when punctuation is delayed—
+and sent immediately to the prewarmed Pocket TTS worker, so playback starts
+before the model completes its full answer. A 60 ms lead-in protects the first
+spoken word from device startup clipping. A new accepted utterance
 cancels queued and active speech before it steers or chains the agent. Leading
 cues in `config/voice-steering-cues.tsv` can queue or replace work. The agent
 retains at most four completed conversation turns and requests at most 256
@@ -161,3 +163,10 @@ stops the output stream immediately and steers or queues the next turn. The
 reference is never persisted or logged. This is application-level echo
 protection; SBC images may additionally enable their codec's hardware AEC when
 the selected microphone and speaker expose it.
+
+Speech lifecycle logs distinguish the stages precisely: `speech_generating`
+means Pocket TTS is synthesizing, `speech_started` is emitted only after the
+CPAL callback has consumed real queued samples, and `speech_finished` means the
+physical playback queue drained. `speech_failed` therefore indicates a real
+worker, conversion, or speaker-consumption failure rather than silently
+claiming that audio played.
