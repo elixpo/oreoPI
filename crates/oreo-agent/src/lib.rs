@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crumb_agent::{
     AgentMode, AgentSession, ApprovalBroker, CancellationToken, SessionId, SessionJournal,
-    ToolHost, TurnStatus, export_session, list_sessions,
+    SteeringQueue, ToolHost, TurnStatus, export_session, list_sessions,
 };
 use crumb_harness::{
     Conversation, EventSink as CrumbEventSink, HarnessErrorKind, HarnessEvent, HarnessLimits,
@@ -30,6 +30,7 @@ pub use capability::{
     ApprovalUi, Capability, CapabilityError, CapabilityLocation, CapabilityRegistry,
     ConfirmationPolicy, DenyApprovalUi,
 };
+pub use crumb_agent::SteeringAction;
 
 /// Non-secret, bounded settings applied to every Oreo agent turn.
 ///
@@ -137,6 +138,119 @@ pub struct AgentResponse {
     pub tool_calls: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurnSubmission {
+    Queued,
+    InterruptRequested,
+}
+
+/// One bounded command removed from the transient turn queue.
+pub struct QueuedAgentTurn {
+    pub message: String,
+    pub cancellation: CancellationToken,
+}
+
+/// Coordinates chained, steered, and replaced turns around one long-lived
+/// [`OreoAgent`] without persisting voice transcripts.
+pub struct AgentTurnController {
+    queue: SteeringQueue,
+    active: Option<CancellationToken>,
+}
+
+impl AgentTurnController {
+    /// Creates a bounded transient turn controller.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero queue limits.
+    pub fn new(max_messages: usize, max_bytes: usize) -> Result<Self, AgentError> {
+        Ok(Self {
+            queue: SteeringQueue::new(max_messages, max_bytes).map_err(|_| {
+                AgentError::new(
+                    AgentErrorKind::Steering,
+                    "agent steering limits are invalid",
+                )
+            })?,
+            active: None,
+        })
+    }
+
+    /// Submits one follow-up policy and cancels the active turn for steer or
+    /// replace. Queue preserves the active turn and runs afterward.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty, oversized, or over-capacity messages without mutation.
+    pub fn submit(
+        &mut self,
+        action: SteeringAction,
+        message: &str,
+    ) -> Result<TurnSubmission, AgentError> {
+        self.queue.submit(action, message).map_err(|_| {
+            AgentError::new(
+                AgentErrorKind::Steering,
+                "agent steering queue rejected the turn",
+            )
+        })?;
+        let interrupts = matches!(action, SteeringAction::Steer | SteeringAction::Replace)
+            && self.active.is_some();
+        if interrupts && let Some(active) = &self.active {
+            active.cancel();
+        }
+        Ok(if interrupts {
+            TurnSubmission::InterruptRequested
+        } else {
+            TurnSubmission::Queued
+        })
+    }
+
+    /// Starts the next queued turn only when no prior turn is active.
+    #[must_use]
+    pub fn begin_next(&mut self) -> Option<QueuedAgentTurn> {
+        if self.active.is_some() {
+            return None;
+        }
+        let message = self.queue.pop()?;
+        let cancellation = CancellationToken::default();
+        self.active = Some(cancellation.clone());
+        Some(QueuedAgentTurn {
+            message,
+            cancellation,
+        })
+    }
+
+    /// Completes the current cancellation boundary and allows the next turn.
+    pub fn finish_active(&mut self, cancellation: &CancellationToken) -> bool {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.shares_signal_with(cancellation))
+        {
+            self.active = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn cancel_all(&mut self) {
+        if let Some(active) = self.active.take() {
+            active.cancel();
+        }
+        self.queue.clear();
+    }
+
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        self.queue.len()
+    }
+
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+}
+
 /// Prompt-free metadata exposed by Oreo's user-owned memory inspector.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemorySummary {
@@ -207,6 +321,7 @@ pub enum AgentErrorKind {
     InvalidProfile,
     Session,
     Harness(HarnessErrorKind),
+    Steering,
 }
 
 /// Redacted failure safe to expose to the local runtime and CLI.
@@ -384,7 +499,10 @@ mod tests {
         LlmProvider, ModelInfo, ProviderError, ProviderErrorKind, ProviderFuture,
     };
 
-    use super::{AgentEvent, AgentProfile, OreoAgent, inspect_memory, list_memory};
+    use super::{
+        AgentEvent, AgentProfile, AgentTurnController, OreoAgent, SteeringAction, TurnSubmission,
+        inspect_memory, list_memory,
+    };
 
     struct FakeProvider {
         events: Mutex<VecDeque<ChatEvent>>,
@@ -505,5 +623,53 @@ mod tests {
         assert_eq!(profile.limits.max_output_bytes.get(), 8 * 1_024);
         assert_eq!(profile.limits.max_history_turns.get(), 4);
         assert_eq!(profile.limits.turn_timeout, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn turn_controller_chains_steers_and_replaces_with_shared_cancellation() {
+        let mut controller = AgentTurnController::new(3, 128).expect("controller starts");
+        assert_eq!(
+            controller
+                .submit(SteeringAction::Queue, "first")
+                .expect("first turn queues"),
+            TurnSubmission::Queued
+        );
+        let first = controller.begin_next().expect("first turn starts");
+        assert!(controller.is_active());
+
+        assert_eq!(
+            controller
+                .submit(SteeringAction::Queue, "later")
+                .expect("follow-up queues"),
+            TurnSubmission::Queued
+        );
+        assert!(!first.cancellation.is_cancelled());
+        assert_eq!(
+            controller
+                .submit(SteeringAction::Steer, "actually do this")
+                .expect("steer queues first"),
+            TurnSubmission::InterruptRequested
+        );
+        assert!(first.cancellation.is_cancelled());
+        assert!(controller.finish_active(&first.cancellation));
+
+        let steered = controller.begin_next().expect("steer starts next");
+        assert_eq!(steered.message, "actually do this");
+        assert!(controller.finish_active(&steered.cancellation));
+        let chained = controller.begin_next().expect("queued turn follows");
+        assert_eq!(chained.message, "later");
+
+        controller
+            .submit(SteeringAction::Replace, "replacement")
+            .expect("replacement interrupts");
+        assert!(chained.cancellation.is_cancelled());
+        assert!(controller.finish_active(&chained.cancellation));
+        assert_eq!(
+            controller
+                .begin_next()
+                .expect("replacement remains")
+                .message,
+            "replacement"
+        );
     }
 }
