@@ -1203,6 +1203,8 @@ version = "0.1.0"
 name = "oreo-daemon"
 version = "0.1.0"
 dependencies = [
+ "oreo-audio",
+ "oreo-core",
  "oreo-local-api",
  "oreo-state",
  "serde_json",

@@ -15,6 +15,13 @@ mod unix {
     use std::thread;
     use std::time::Duration;
 
+    #[cfg(feature = "voice-runtime")]
+    use oreo_audio::{
+        AudioLimits, AudioSource, ConvertingSource, CpalInputSource, OpenWakeWordConfig,
+        OpenWakeWordDetector, STT_FORMAT, VoskTranscriber, WakeCommandPipeline, WakePipelineEvent,
+    };
+    #[cfg(feature = "voice-runtime")]
+    use oreo_core::CancellationToken;
     use oreo_local_api::{
         ApiTimer, ErrorCode, MAX_TIMER_DURATION_MS, PROTOCOL_VERSION, Request, Response,
         RuntimePhase, read_request, write_response,
@@ -27,6 +34,20 @@ mod unix {
     pub struct DaemonConfig {
         pub state_directory: PathBuf,
         pub limits: StateLimits,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct VoiceConfig {
+        pub repository_root: PathBuf,
+    }
+
+    impl VoiceConfig {
+        #[must_use]
+        pub fn for_repository(root: impl AsRef<Path>) -> Self {
+            Self {
+                repository_root: root.as_ref().to_path_buf(),
+            }
+        }
     }
 
     impl DaemonConfig {
@@ -73,6 +94,15 @@ mod unix {
             };
             self.phase.store(value, Ordering::Release);
         }
+
+        fn mark_ready(&self) {
+            let _ = self.phase.compare_exchange(
+                PHASE_STARTING,
+                PHASE_READY,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
     }
 
     struct SocketGuard(PathBuf);
@@ -90,6 +120,13 @@ mod unix {
     /// Returns a redacted error if the state path, database, socket, protocol,
     /// or scheduler cannot be initialized.
     pub fn run(config: &DaemonConfig) -> Result<(), DaemonError> {
+        run_inner(config, None)
+    }
+
+    fn run_inner(
+        config: &DaemonConfig,
+        voice_config: Option<VoiceConfig>,
+    ) -> Result<(), DaemonError> {
         prepare_state_directory(&config.state_directory)?;
         let socket_path = config.socket_path();
         prepare_socket_path(&socket_path)?;
@@ -131,7 +168,16 @@ mod unix {
                 )
             })?;
 
-        shared.set_phase(RuntimePhase::Ready);
+        let voice = match spawn_voice(&shared, voice_config) {
+            Ok(voice) => voice,
+            Err(error) => {
+                let _ = request_stop(&shared);
+                let _ = scheduler.join();
+                return Err(error);
+            }
+        };
+
+        shared.mark_ready();
         write_log(LogEvent::DaemonStarted, LogOutcome::Succeeded);
 
         let server_result = serve(&listener, &shared);
@@ -146,7 +192,128 @@ mod unix {
                 "timer scheduler stopped unexpectedly",
             )
         })?;
-        server_result.and(stop_result).and(scheduler_result)
+        let voice_result = join_voice(voice);
+        server_result
+            .and(stop_result)
+            .and(scheduler_result)
+            .and(voice_result)
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    fn spawn_voice(
+        shared: &Arc<SharedState>,
+        config: Option<VoiceConfig>,
+    ) -> Result<Option<thread::JoinHandle<Result<(), DaemonError>>>, DaemonError> {
+        config
+            .map(|voice_config| {
+                let voice_state = shared.clone();
+                thread::Builder::new()
+                    .name("oreo-voice".to_owned())
+                    .spawn(move || {
+                        let result = voice_loop(&voice_state, &voice_config);
+                        if result.is_err() {
+                            voice_state.set_phase(RuntimePhase::Faulted);
+                            write_log(LogEvent::VoiceFault, LogOutcome::Failed);
+                        }
+                        result
+                    })
+                    .map_err(|_| {
+                        DaemonError::new(DaemonErrorKind::Voice, "voice runtime could not start")
+                    })
+            })
+            .transpose()
+    }
+
+    #[cfg(not(feature = "voice-runtime"))]
+    fn spawn_voice(
+        _shared: &Arc<SharedState>,
+        config: Option<VoiceConfig>,
+    ) -> Result<Option<()>, DaemonError> {
+        if config.is_some() {
+            Err(DaemonError::new(
+                DaemonErrorKind::Voice,
+                "voice runtime requires the voice-runtime build feature",
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    fn join_voice(
+        voice: Option<thread::JoinHandle<Result<(), DaemonError>>>,
+    ) -> Result<(), DaemonError> {
+        match voice {
+            Some(voice) => voice.join().map_err(|_| {
+                DaemonError::new(DaemonErrorKind::Voice, "voice runtime stopped unexpectedly")
+            })?,
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(not(feature = "voice-runtime"))]
+    const fn join_voice(_voice: Option<()>) -> Result<(), DaemonError> {
+        Ok(())
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    fn voice_loop(shared: &Arc<SharedState>, config: &VoiceConfig) -> Result<(), DaemonError> {
+        let limits = AudioLimits::sbc();
+        let cancellation = CancellationToken::new();
+        let detector =
+            OpenWakeWordDetector::new(OpenWakeWordConfig::for_repository(&config.repository_root))
+                .map_err(voice_error)?;
+        let transcriber = VoskTranscriber::load(
+            config
+                .repository_root
+                .join("models/cache/vosk-model-small-en-us-0.15"),
+            limits,
+        )
+        .map_err(voice_error)?;
+        let mut pipeline =
+            WakeCommandPipeline::new(detector, transcriber, limits).map_err(voice_error)?;
+        pipeline.prewarm(&cancellation).map_err(voice_error)?;
+        let input = CpalInputSource::open_default(limits).map_err(voice_error)?;
+        let capture_control = input.control();
+        let mut source = ConvertingSource::new(input, STT_FORMAT, limits).map_err(voice_error)?;
+
+        while !shared.stopping.load(Ordering::Acquire) {
+            let Some(chunk) = source.next_chunk(&cancellation).map_err(voice_error)? else {
+                break;
+            };
+            match pipeline
+                .process(&chunk, &cancellation)
+                .map_err(voice_error)?
+            {
+                Some(WakePipelineEvent::WakeAccepted { .. }) => {
+                    write_log(LogEvent::WakeAccepted, LogOutcome::Succeeded);
+                }
+                Some(WakePipelineEvent::CommandReady { transcript }) => {
+                    if transcript.trim().is_empty() {
+                        return Err(DaemonError::new(
+                            DaemonErrorKind::Voice,
+                            "voice runtime produced an empty command",
+                        ));
+                    }
+                    write_log(LogEvent::VoiceCommandReady, LogOutcome::Succeeded);
+                }
+                Some(WakePipelineEvent::CommandTimedOut) => {
+                    write_log(LogEvent::VoiceCommandTimedOut, LogOutcome::Denied);
+                }
+                None => {}
+            }
+        }
+        cancellation.cancel();
+        capture_control.stop();
+        pipeline.shutdown();
+        let snapshot = source.into_inner().stats();
+        if snapshot.dropped_chunks != 0 || snapshot.stream_errors != 0 {
+            return Err(DaemonError::new(
+                DaemonErrorKind::Voice,
+                "voice runtime lost microphone audio",
+            ));
+        }
+        Ok(())
     }
 
     fn serve(listener: &UnixListener, shared: &Arc<SharedState>) -> Result<(), DaemonError> {
@@ -426,6 +593,14 @@ mod unix {
         TimerCancelled,
         TimerFired,
         RuntimeFault,
+        #[cfg(feature = "voice-runtime")]
+        WakeAccepted,
+        #[cfg(feature = "voice-runtime")]
+        VoiceCommandReady,
+        #[cfg(feature = "voice-runtime")]
+        VoiceCommandTimedOut,
+        #[cfg(feature = "voice-runtime")]
+        VoiceFault,
     }
 
     impl LogEvent {
@@ -438,6 +613,14 @@ mod unix {
                 Self::TimerCancelled => "timer_cancelled",
                 Self::TimerFired => "timer_fired",
                 Self::RuntimeFault => "runtime_fault",
+                #[cfg(feature = "voice-runtime")]
+                Self::WakeAccepted => "wake_accepted",
+                #[cfg(feature = "voice-runtime")]
+                Self::VoiceCommandReady => "voice_command_ready",
+                #[cfg(feature = "voice-runtime")]
+                Self::VoiceCommandTimedOut => "voice_command_timed_out",
+                #[cfg(feature = "voice-runtime")]
+                Self::VoiceFault => "voice_fault",
             }
         }
     }
@@ -531,6 +714,7 @@ mod unix {
         Scheduler,
         StatePoisoned,
         State(StateErrorKind),
+        Voice,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -559,10 +743,47 @@ mod unix {
     ///
     /// Returns a redacted configuration or daemon failure.
     pub fn run_from_environment() -> Result<(), DaemonError> {
-        run(&DaemonConfig {
+        let config = DaemonConfig {
             state_directory: state_directory()?,
             limits: StateLimits::sbc(),
-        })
+        };
+        if voice_enabled()? {
+            #[cfg(feature = "voice-runtime")]
+            {
+                let root = env::var_os("OREO_REPO_ROOT")
+                    .filter(|path| !path.is_empty())
+                    .map_or_else(
+                        || env::current_dir().map_err(io_error),
+                        |path| Ok(PathBuf::from(path)),
+                    )?;
+                return run_inner(&config, Some(VoiceConfig::for_repository(root)));
+            }
+            #[cfg(not(feature = "voice-runtime"))]
+            {
+                return Err(DaemonError::new(
+                    DaemonErrorKind::Voice,
+                    "voice runtime requires the voice-runtime build feature",
+                ));
+            }
+        }
+        run(&config)
+    }
+
+    fn voice_enabled() -> Result<bool, DaemonError> {
+        match env::var("OREO_VOICE_ENABLED") {
+            Err(env::VarError::NotPresent) => Ok(false),
+            Ok(value) if matches!(value.as_str(), "1" | "true") => Ok(true),
+            Ok(value) if matches!(value.as_str(), "0" | "false") => Ok(false),
+            Ok(_) | Err(env::VarError::NotUnicode(_)) => Err(DaemonError::new(
+                DaemonErrorKind::Voice,
+                "OREO_VOICE_ENABLED must be true, false, 1, or 0",
+            )),
+        }
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    fn voice_error(_error: oreo_audio::AudioError) -> DaemonError {
+        DaemonError::new(DaemonErrorKind::Voice, "voice runtime failed")
     }
 
     fn state_directory() -> Result<PathBuf, DaemonError> {
@@ -717,4 +938,6 @@ mod unix {
 }
 
 #[cfg(unix)]
-pub use unix::{DaemonConfig, DaemonError, DaemonErrorKind, run, run_from_environment};
+pub use unix::{
+    DaemonConfig, DaemonError, DaemonErrorKind, VoiceConfig, run, run_from_environment,
+};

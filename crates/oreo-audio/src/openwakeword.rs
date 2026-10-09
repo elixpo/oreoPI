@@ -28,6 +28,7 @@ pub struct OpenWakeWordConfig {
     pub embedding: PathBuf,
     pub threshold: f32,
     pub startup_timeout: Duration,
+    pub response_timeout: Duration,
 }
 
 impl OpenWakeWordConfig {
@@ -43,6 +44,7 @@ impl OpenWakeWordConfig {
             embedding: features.join("embedding_model.onnx"),
             threshold: 0.005,
             startup_timeout: Duration::from_secs(30),
+            response_timeout: Duration::from_secs(2),
         }
     }
 
@@ -55,6 +57,8 @@ impl OpenWakeWordConfig {
             || !(0.0..=1.0).contains(&self.threshold)
             || self.threshold == 0.0
             || !(Duration::from_secs(1)..=Duration::from_mins(5)).contains(&self.startup_timeout)
+            || !(Duration::from_millis(100)..=Duration::from_secs(5))
+                .contains(&self.response_timeout)
         {
             return Err(AudioError::new(
                 AudioErrorKind::InvalidConfig,
@@ -261,10 +265,15 @@ impl OpenWakeWordDetector {
     }
 
     fn wait_frame(&mut self, cancellation: &CancellationToken) -> Result<WorkerFrame, AudioError> {
+        let deadline = Instant::now() + self.config.response_timeout;
         loop {
             if cancellation.is_cancelled() {
                 self.stop_worker();
                 return Err(cancelled());
+            }
+            if Instant::now() >= deadline {
+                self.stop_worker();
+                return Err(backend_error());
             }
             match self.worker_frame() {
                 Ok(Some(frame)) => return Ok(frame),
@@ -445,6 +454,7 @@ while True:
             embedding,
             threshold: 0.5,
             startup_timeout: Duration::from_secs(2),
+            response_timeout: Duration::from_secs(1),
         };
         let mut detector = OpenWakeWordDetector::new(config).expect("detector config is valid");
         let cancellation = CancellationToken::new();

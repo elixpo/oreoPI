@@ -17,6 +17,8 @@ mod vad;
 #[cfg(feature = "vosk-stt")]
 mod vosk_stt;
 mod wake;
+#[cfg(feature = "voice-runtime")]
+mod wake_runtime;
 mod wav;
 
 use std::error::Error;
@@ -41,6 +43,8 @@ pub use vad::{EnergyVad, VadConfig, VadDecision};
 #[cfg(feature = "vosk-stt")]
 pub use vosk_stt::{VoskConfidence, VoskTranscriber};
 pub use wake::{WakeAudioWindow, WakeIntentClassifier, WakeIntentDecision};
+#[cfg(feature = "voice-runtime")]
+pub use wake_runtime::{WakeCommandPipeline, WakePipelineEvent};
 pub use wav::WavSource;
 
 pub const MAX_CHANNELS: u16 = 2;

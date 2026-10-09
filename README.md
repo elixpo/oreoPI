@@ -20,13 +20,16 @@ offline speech-input path:
 CLI input -> local Unix socket -> daemon -> bounded SQLite state
          \-> local router or Oreo agent -> response plan -> output sink
 microphone -> bounded PCM conversion -> Vosk -> Oreo agent -> text response
+microphone -> openWakeWord -> Vosk intent gate -> VAD follow-up -> Vosk command
 ```
 
-The developer voice command uses explicit Enter-to-start/Enter-to-stop capture.
-Wake-word detection, TTS, and hardware GPIO are later layers. The CLI keeps an
-explicit offline path and enables the live Pollinations provider only when its
-credential is supplied through the process environment. GPT-5.4 Nano is the
-pinned default; `OREO_MODEL` can override it for controlled evaluations.
+The developer voice command retains explicit Enter-to-start/Enter-to-stop
+capture. The daemon also has an opt-in, always-on laptop wake runtime; it keeps
+the acoustic model in an isolated local worker and never logs transcripts.
+Agent handoff from the daemon, TTS, and hardware GPIO are later layers. The CLI
+keeps an explicit offline path and enables the live Pollinations provider only
+when its credential is supplied through the process environment. GPT-5.4 Nano
+is the pinned default; `OREO_MODEL` can override it for controlled evaluations.
 
 ## Build and test
 

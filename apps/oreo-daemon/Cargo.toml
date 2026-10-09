@@ -5,7 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 
+[features]
+default = []
+voice-runtime = ["dep:oreo-audio", "dep:oreo-core", "oreo-audio/voice-runtime"]
+
 [dependencies]
+oreo-audio = { path = "../../crates/oreo-audio", optional = true }
+oreo-core = { path = "../../crates/oreo-core", optional = true }
 oreo-local-api = { path = "../../crates/oreo-local-api" }
 oreo-state = { path = "../../crates/oreo-state" }
 

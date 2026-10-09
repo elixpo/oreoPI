@@ -28,9 +28,10 @@ The laptop candidate uses a four-stage local cascade:
    address.
 
 Both sherpa candidates missed natural Oreo recordings after threshold and
-boost tuning. The corpus-trained openWakeWord model is the current candidate;
-see `docs/audio/openwakeword.md`. No wake engine is selected until the recorded
-benchmark and background soak pass.
+boost tuning. The corpus-trained openWakeWord model passed the recorded suite
+and an untouched one-hour LibriSpeech validation soak, so it is selected for
+the laptop daemon; see `docs/audio/openwakeword.md`. AArch64 and final enclosure
+testing remain required before hardware selection.
 
 ## Privacy and resource bounds
 
@@ -41,7 +42,7 @@ benchmark and background soak pass.
 - Empty and oversized transcripts fail closed. Cancellation immediately clears
   retained samples.
 - Models and local recordings live under ignored cache/fixture paths. Neither
-  audio nor transcripts are logged by the future daemon path.
+  audio nor transcripts are logged by the daemon path.
 - One CPU thread is the benchmark default. KWS score and threshold are recorded
   in each report so laptop and SBC results remain comparable.
 
@@ -88,11 +89,11 @@ the three-second window duration. Do not loosen the intent threshold to repair
 an acoustic miss. Tune one KWS setting at a time using separate reports, then
 listen to the relevant WAV and inspect the actual Vosk transcript.
 
-After the quiet fixture gate passes, add locally ignored far-field, fan-noise,
-music, and television fixtures and run an eight-hour idle soak. The native
-daemon adapter, barge-in/follow-up state machine, and AArch64 measurements are
-the next implementation steps; this pass selects the trigger behavior and its
-resource envelope first.
+The untouched third LibriSpeech hour produced 209 permissive acoustic
+candidates, zero accepted false activations, 594 ms p95 candidate latency, and
+20.4x real-time throughput. The native daemon now owns the bounded worker,
+three-second wake window, and VAD-ended follow-up command capture. Agent
+handoff, barge-in, speech output, and AArch64 measurements are the next layers.
 
 The bilingual phone candidate can be reproduced with
 `./scripts/fetch-wake-model.sh bilingual` and `--kws-model bilingual`. Do not

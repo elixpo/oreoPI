@@ -68,3 +68,35 @@ response.
 The repository ignores every WAV file. Keep the expected sentence separately
 in the local benchmark manifest when measuring word error rate; do not tune a
 free-conversation recognizer with a restrictive command grammar.
+
+## Always-on daemon wake runtime
+
+The laptop-selected daemon path is:
+
+```text
+CPAL -> bounded 16 kHz conversion -> openWakeWord worker
+     -> three-second Vosk/intent gate -> VAD follow-up -> Vosk command
+```
+
+The openWakeWord worker is pinned to `.venv-wake`, has networking and inherited
+environment variables removed, accepts only fixed 1,280-sample frames, and
+returns one bounded score. Rust owns the rolling window, thresholds, Vosk,
+follow-up timeout, cancellation, and microphone lifecycle. After activation,
+speak the command within five seconds; 300 ms of silence ends it. The maximum
+command duration remains 30 seconds.
+
+Run the daemon from the repository root:
+
+```bash
+rtk env OREO_VOICE_ENABLED=1 OREO_REPO_ROOT="$PWD" \
+  OREO_VOSK_LIB_DIR="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  LD_LIBRARY_PATH="$PWD/.venv/lib/python3.14/site-packages/vosk" \
+  cargo run -p oreo-daemon --features voice-runtime
+```
+
+Say an accepted Oreo address, wait for the fixed `wake_accepted` event, and
+then speak one command. A successful transcription emits
+`voice_command_ready`; its text is deliberately absent from logs. Stop the
+daemon from another terminal with `cargo run -p elixpo-cli -- daemon stop`.
+This checkpoint ends at a bounded command transcript. Routing that transcript
+through the Oreo agent and speech output is the next layer.

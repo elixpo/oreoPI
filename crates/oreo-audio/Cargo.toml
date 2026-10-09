@@ -9,6 +9,7 @@ license-file.workspace = true
 default = []
 openwakeword = []
 pocket-tts = []
+voice-runtime = ["openwakeword", "vosk-stt"]
 vosk-stt = ["dep:vosk"]
 
 [dependencies]
