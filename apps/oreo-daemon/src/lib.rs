@@ -35,12 +35,13 @@ mod unix {
     #[cfg(feature = "voice-runtime")]
     use oreo_core::CancellationToken;
     use oreo_local_api::{
-        ApiTimer, ErrorCode, MAX_TIMER_DURATION_MS, PROTOCOL_VERSION, Request, Response,
-        RuntimePhase, read_request, write_response,
+        ApiMemory, ApiMemoryScope, ApiTimer, ErrorCode, MAX_MEMORY_DURATION_MS,
+        MAX_TIMER_DURATION_MS, PROTOCOL_VERSION, Request, Response, RuntimePhase, read_request,
+        write_response,
     };
     use oreo_state::{
-        Clock, EventOutcome, RuntimeEventKind, StateError, StateErrorKind, StateLimits, StateStore,
-        SystemClock,
+        Clock, EventOutcome, MemoryRecord, MemoryScope, RuntimeEventKind, StateError,
+        StateErrorKind, StateLimits, StateStore, SystemClock,
     };
 
     pub struct DaemonConfig {
@@ -482,6 +483,18 @@ mod unix {
             } => (set_timer_response(shared, &id, duration_ms), false),
             Request::TimerList { .. } => (timer_list_response(shared), false),
             Request::TimerCancel { id, .. } => (cancel_timer_response(shared, id), false),
+            Request::MemoryRemember {
+                id,
+                scope,
+                content,
+                duration_ms,
+                ..
+            } => (
+                remember_response(shared, &id, scope, &content, duration_ms),
+                false,
+            ),
+            Request::MemoryList { scope, .. } => (memory_list_response(shared, scope), false),
+            Request::MemoryForget { id, .. } => (forget_memory_response(shared, &id), false),
             Request::Shutdown { .. } => {
                 if request_stop(shared).is_ok() {
                     write_log(LogEvent::DaemonStopping, LogOutcome::Succeeded);
@@ -592,6 +605,95 @@ mod unix {
                 }
             }
             Err(error) => state_response(error),
+        }
+    }
+
+    fn remember_response(
+        shared: &SharedState,
+        id: &str,
+        scope: ApiMemoryScope,
+        content: &str,
+        duration_ms: Option<u64>,
+    ) -> Response {
+        let clock = SystemClock;
+        let expires_at_ms = match (scope, duration_ms) {
+            (ApiMemoryScope::LongTerm, None) => None,
+            (ApiMemoryScope::Session, Some(duration))
+                if duration > 0 && duration <= MAX_MEMORY_DURATION_MS =>
+            {
+                match clock.now_ms().checked_add(duration) {
+                    Some(expires) => Some(expires),
+                    None => {
+                        return error_response(
+                            ErrorCode::InvalidRequest,
+                            "memory expiry is invalid",
+                        );
+                    }
+                }
+            }
+            _ => {
+                return error_response(
+                    ErrorCode::InvalidRequest,
+                    "memory duration does not match its scope",
+                );
+            }
+        };
+        let state_scope = match scope {
+            ApiMemoryScope::Session => MemoryScope::Session,
+            ApiMemoryScope::LongTerm => MemoryScope::LongTerm,
+        };
+        match lock_store(shared).and_then(|mut store| {
+            store
+                .remember(&clock, id, state_scope, content, expires_at_ms)
+                .map_err(state_error)
+        }) {
+            Ok(memory) => Response::MemoryRemembered {
+                version: PROTOCOL_VERSION,
+                memory: api_memory(memory),
+            },
+            Err(error) => state_response(error),
+        }
+    }
+
+    fn memory_list_response(shared: &SharedState, scope: ApiMemoryScope) -> Response {
+        let state_scope = match scope {
+            ApiMemoryScope::Session => MemoryScope::Session,
+            ApiMemoryScope::LongTerm => MemoryScope::LongTerm,
+        };
+        match lock_store(shared).and_then(|mut store| {
+            store
+                .memories(&SystemClock, state_scope, shared.limits.max_memories)
+                .map_err(state_error)
+        }) {
+            Ok(memories) => Response::MemoryList {
+                version: PROTOCOL_VERSION,
+                memories: memories.into_iter().map(api_memory).collect(),
+            },
+            Err(error) => state_response(error),
+        }
+    }
+
+    fn forget_memory_response(shared: &SharedState, id: &str) -> Response {
+        match lock_store(shared).and_then(|mut store| store.forget_memory(id).map_err(state_error))
+        {
+            Ok(()) => Response::MemoryForgotten {
+                version: PROTOCOL_VERSION,
+                id: id.to_owned(),
+            },
+            Err(error) => state_response(error),
+        }
+    }
+
+    fn api_memory(memory: MemoryRecord) -> ApiMemory {
+        ApiMemory {
+            id: memory.id,
+            scope: match memory.scope {
+                MemoryScope::Session => ApiMemoryScope::Session,
+                MemoryScope::LongTerm => ApiMemoryScope::LongTerm,
+            },
+            content: memory.content,
+            updated_at_ms: memory.updated_at_ms,
+            expires_at_ms: memory.expires_at_ms,
         }
     }
 
@@ -1077,7 +1179,9 @@ mod unix {
         use std::thread;
         use std::time::Duration;
 
-        use oreo_local_api::{PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request};
+        use oreo_local_api::{
+            ApiMemoryScope, PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request,
+        };
         use oreo_state::{ManualClock, StateLimits, StateStore};
 
         use super::{DaemonConfig, LogEvent, LogOutcome, process_due, run, structured_log_line};
@@ -1087,6 +1191,8 @@ mod unix {
                 max_events: 16,
                 max_active_timers: 8,
                 max_timer_history: 8,
+                max_memories: 16,
+                max_memory_bytes: 256,
             }
         }
 
@@ -1171,6 +1277,29 @@ mod unix {
             )
             .expect("cancel succeeds");
             assert!(matches!(cancel, Response::TimerCancelled { .. }));
+            let remembered = send_request(
+                &socket,
+                &Request::MemoryRemember {
+                    version: PROTOCOL_VERSION,
+                    id: "tea-preference".to_owned(),
+                    scope: ApiMemoryScope::LongTerm,
+                    content: "The user prefers ginger tea.".to_owned(),
+                    duration_ms: None,
+                },
+            )
+            .expect("memory request succeeds");
+            assert!(matches!(remembered, Response::MemoryRemembered { .. }));
+            let memories = send_request(
+                &socket,
+                &Request::MemoryList {
+                    version: PROTOCOL_VERSION,
+                    scope: ApiMemoryScope::LongTerm,
+                },
+            )
+            .expect("memory list succeeds");
+            assert!(
+                matches!(memories, Response::MemoryList { ref memories, .. } if memories.len() == 1)
+            );
             let diagnostics = send_request(
                 &socket,
                 &Request::Diagnostics {

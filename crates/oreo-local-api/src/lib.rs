@@ -10,6 +10,14 @@ use serde::{Deserialize, Serialize};
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 pub const MAX_TIMER_DURATION_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+pub const MAX_MEMORY_DURATION_MS: u64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiMemoryScope {
+    Session,
+    LongTerm,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -32,6 +40,21 @@ pub enum Request {
         version: u16,
         id: String,
     },
+    MemoryRemember {
+        version: u16,
+        id: String,
+        scope: ApiMemoryScope,
+        content: String,
+        duration_ms: Option<u64>,
+    },
+    MemoryList {
+        version: u16,
+        scope: ApiMemoryScope,
+    },
+    MemoryForget {
+        version: u16,
+        id: String,
+    },
     Shutdown {
         version: u16,
     },
@@ -46,6 +69,9 @@ impl Request {
             | Self::TimerSet { version, .. }
             | Self::TimerList { version }
             | Self::TimerCancel { version, .. }
+            | Self::MemoryRemember { version, .. }
+            | Self::MemoryList { version, .. }
+            | Self::MemoryForget { version, .. }
             | Self::Shutdown { version } => *version,
         }
     }
@@ -65,6 +91,15 @@ pub struct ApiTimer {
     pub id: String,
     pub due_at_ms: u64,
     pub created_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ApiMemory {
+    pub id: String,
+    pub scope: ApiMemoryScope,
+    pub content: String,
+    pub updated_at_ms: u64,
+    pub expires_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -106,6 +141,18 @@ pub enum Response {
         timers: Vec<ApiTimer>,
     },
     TimerCancelled {
+        version: u16,
+        id: String,
+    },
+    MemoryRemembered {
+        version: u16,
+        memory: ApiMemory,
+    },
+    MemoryList {
+        version: u16,
+        memories: Vec<ApiMemory>,
+    },
+    MemoryForgotten {
         version: u16,
         id: String,
     },
@@ -263,8 +310,8 @@ impl Error for LocalApiError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        LocalApiErrorKind, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Request, Response, read_request,
-        write_response,
+        ApiMemoryScope, LocalApiErrorKind, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Request, Response,
+        read_request, write_response,
     };
 
     #[test]
@@ -316,5 +363,18 @@ mod tests {
         )
         .expect("response encodes");
         assert!(encoded.ends_with(b"\n"));
+    }
+
+    #[test]
+    fn explicit_memory_request_round_trips_without_shell_parsing() {
+        let request = Request::MemoryRemember {
+            version: PROTOCOL_VERSION,
+            id: "tea".to_owned(),
+            scope: ApiMemoryScope::LongTerm,
+            content: "The user prefers ginger tea.".to_owned(),
+            duration_ms: None,
+        };
+        let encoded = serde_json::to_vec(&request).expect("request encodes");
+        assert_eq!(read_request(&mut encoded.as_slice()), Ok(request));
     }
 }

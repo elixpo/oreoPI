@@ -1,7 +1,8 @@
 //! Bounded, local-only persistent state for the Oreo device runtime.
 //!
-//! This crate intentionally accepts only typed operational metadata. It has no
-//! API for credentials, prompts, model responses, tool payloads, or raw audio.
+//! This crate accepts typed operational metadata and explicit, bounded memory
+//! records. It has no API for credentials, raw conversation transcripts,
+//! model responses, tool payloads, or raw audio.
 
 use std::error::Error;
 use std::fmt;
@@ -12,13 +13,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StateLimits {
     pub max_events: usize,
     pub max_active_timers: usize,
     pub max_timer_history: usize,
+    pub max_memories: usize,
+    pub max_memory_bytes: usize,
 }
 
 impl StateLimits {
@@ -28,11 +31,18 @@ impl StateLimits {
             max_events: 2_048,
             max_active_timers: 128,
             max_timer_history: 256,
+            max_memories: 256,
+            max_memory_bytes: 512,
         }
     }
 
     fn validate(self) -> Result<Self, StateError> {
-        if self.max_events == 0 || self.max_active_timers == 0 || self.max_timer_history == 0 {
+        if self.max_events == 0
+            || self.max_active_timers == 0
+            || self.max_timer_history == 0
+            || self.max_memories == 0
+            || self.max_memory_bytes == 0
+        {
             return Err(StateError::new(
                 StateErrorKind::InvalidInput,
                 "state limits must be positive",
@@ -172,6 +182,42 @@ pub struct TimerRecord {
     pub status: TimerStatus,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryScope {
+    Session,
+    LongTerm,
+}
+
+impl MemoryScope {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::LongTerm => "long_term",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, StateError> {
+        match value {
+            "session" => Ok(Self::Session),
+            "long_term" => Ok(Self::LongTerm),
+            _ => Err(StateError::new(
+                StateErrorKind::Database,
+                "stored memory scope is invalid",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemoryRecord {
+    pub id: String,
+    pub scope: MemoryScope,
+    pub content: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub expires_at_ms: Option<u64>,
+}
+
 pub struct StateStore {
     connection: Connection,
     limits: StateLimits,
@@ -234,6 +280,11 @@ impl StateStore {
             0 => self
                 .connection
                 .execute_batch(MIGRATION_1)
+                .and_then(|()| self.connection.execute_batch(MIGRATION_2))
+                .map_err(database_error),
+            1 => self
+                .connection
+                .execute_batch(MIGRATION_2)
                 .map_err(database_error),
             SCHEMA_VERSION => Ok(()),
             _ => Err(StateError::new(
@@ -490,6 +541,180 @@ impl StateStore {
             .map_err(database_error)?;
         from_sql_count(count)
     }
+
+    /// Adds or replaces one explicit memory and enforces the device-wide bound.
+    ///
+    /// Session memories require an expiry. Long-term memories cannot expire.
+    /// Credentials and raw multiline payloads are rejected before persistence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed validation, capacity, or database error.
+    pub fn remember(
+        &mut self,
+        clock: &dyn Clock,
+        id: &str,
+        scope: MemoryScope,
+        content: &str,
+        expires_at_ms: Option<u64>,
+    ) -> Result<MemoryRecord, StateError> {
+        validate_memory_id(id)?;
+        validate_memory_content(content, self.limits.max_memory_bytes)?;
+        let now_ms = clock.now_ms();
+        match (scope, expires_at_ms) {
+            (MemoryScope::Session, Some(expires)) if expires > now_ms => {}
+            (MemoryScope::LongTerm, None) => {}
+            _ => {
+                return Err(StateError::new(
+                    StateErrorKind::InvalidInput,
+                    "memory expiry does not match its scope",
+                ));
+            }
+        }
+        self.prune_expired_memories(clock)?;
+        let exists = self
+            .connection
+            .query_row("SELECT 1 FROM memories WHERE id = ?1", [id], |_| Ok(()))
+            .optional()
+            .map_err(database_error)?
+            .is_some();
+        if !exists && self.memory_count()? >= self.limits.max_memories {
+            return Err(StateError::new(
+                StateErrorKind::Capacity,
+                "memory capacity reached",
+            ));
+        }
+        let created_at_ms = if exists {
+            self.connection
+                .query_row(
+                    "SELECT created_at_ms FROM memories WHERE id = ?1",
+                    [id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(database_error)
+                .and_then(from_sql_time)?
+        } else {
+            now_ms
+        };
+        self.connection
+            .execute(
+                "INSERT INTO memories
+                    (id, scope, content, created_at_ms, updated_at_ms, expires_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                    scope = excluded.scope,
+                    content = excluded.content,
+                    updated_at_ms = excluded.updated_at_ms,
+                    expires_at_ms = excluded.expires_at_ms",
+                params![
+                    id,
+                    scope.as_str(),
+                    content.trim(),
+                    to_sql_time(created_at_ms)?,
+                    to_sql_time(now_ms)?,
+                    expires_at_ms.map(to_sql_time).transpose()?
+                ],
+            )
+            .map_err(database_error)?;
+        Ok(MemoryRecord {
+            id: id.to_owned(),
+            scope,
+            content: content.trim().to_owned(),
+            created_at_ms,
+            updated_at_ms: now_ms,
+            expires_at_ms,
+        })
+    }
+
+    /// Returns non-expired memories in most-recently-updated order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or database error.
+    pub fn memories(
+        &mut self,
+        clock: &dyn Clock,
+        scope: MemoryScope,
+        limit: usize,
+    ) -> Result<Vec<MemoryRecord>, StateError> {
+        if limit == 0 || limit > self.limits.max_memories {
+            return Err(StateError::new(
+                StateErrorKind::InvalidInput,
+                "memory result limit is invalid",
+            ));
+        }
+        self.prune_expired_memories(clock)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, scope, content, created_at_ms, updated_at_ms, expires_at_ms
+                 FROM memories WHERE scope = ?1
+                 ORDER BY updated_at_ms DESC, id LIMIT ?2",
+            )
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map(params![scope.as_str(), to_sql_count(limit)?], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                ))
+            })
+            .map_err(database_error)?;
+        rows.map(|row| {
+            let (id, scope, content, created, updated, expires) = row.map_err(database_error)?;
+            Ok(MemoryRecord {
+                id,
+                scope: MemoryScope::parse(&scope)?,
+                content,
+                created_at_ms: from_sql_time(created)?,
+                updated_at_ms: from_sql_time(updated)?,
+                expires_at_ms: expires.map(from_sql_time).transpose()?,
+            })
+        })
+        .collect()
+    }
+
+    /// Forgets one memory by its bounded identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found when no matching memory exists.
+    pub fn forget_memory(&mut self, id: &str) -> Result<(), StateError> {
+        validate_memory_id(id)?;
+        let deleted = self
+            .connection
+            .execute("DELETE FROM memories WHERE id = ?1", [id])
+            .map_err(database_error)?;
+        if deleted == 0 {
+            return Err(StateError::new(
+                StateErrorKind::NotFound,
+                "memory was not found",
+            ));
+        }
+        Ok(())
+    }
+
+    fn prune_expired_memories(&mut self, clock: &dyn Clock) -> Result<(), StateError> {
+        self.connection
+            .execute(
+                "DELETE FROM memories WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?1",
+                [to_sql_time(clock.now_ms())?],
+            )
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    fn memory_count(&self) -> Result<usize, StateError> {
+        let count = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+            .map_err(database_error)?;
+        from_sql_count(count)
+    }
 }
 
 const MIGRATION_1: &str = r"
@@ -515,6 +740,23 @@ PRAGMA user_version = 1;
 COMMIT;
 ";
 
+const MIGRATION_2: &str = r"
+BEGIN IMMEDIATE;
+CREATE TABLE memories (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK (scope IN ('session', 'long_term')),
+    content TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+    expires_at_ms INTEGER CHECK (expires_at_ms IS NULL OR expires_at_ms >= 0)
+);
+CREATE INDEX memories_scope_updated_idx ON memories(scope, updated_at_ms DESC);
+CREATE INDEX memories_expiry_idx ON memories(expires_at_ms)
+    WHERE expires_at_ms IS NOT NULL;
+PRAGMA user_version = 2;
+COMMIT;
+";
+
 fn validate_timer_id(id: &str) -> Result<(), StateError> {
     if id.is_empty()
         || id.len() > 64
@@ -525,6 +767,45 @@ fn validate_timer_id(id: &str) -> Result<(), StateError> {
         return Err(StateError::new(
             StateErrorKind::InvalidInput,
             "timer id must be a bounded ASCII identifier",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_memory_id(id: &str) -> Result<(), StateError> {
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(StateError::new(
+            StateErrorKind::InvalidInput,
+            "memory id must be a bounded ASCII identifier",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_memory_content(content: &str, max_bytes: usize) -> Result<(), StateError> {
+    let trimmed = content.trim();
+    let normalized = trimmed.to_ascii_lowercase();
+    if trimmed.is_empty()
+        || trimmed.len() > max_bytes
+        || trimmed.contains(['\n', '\r', '\0'])
+        || [
+            "password",
+            "api key",
+            "api_key",
+            "secret key",
+            "access token",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        return Err(StateError::new(
+            StateErrorKind::InvalidInput,
+            "memory content is empty, unsafe, or too large",
         ));
     }
     Ok(())
@@ -605,8 +886,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        EventOutcome, ManualClock, RuntimeEventKind, StateErrorKind, StateLimits, StateStore,
-        TimerStatus,
+        EventOutcome, ManualClock, MemoryScope, RuntimeEventKind, StateErrorKind, StateLimits,
+        StateStore, TimerStatus,
     };
 
     fn limits() -> StateLimits {
@@ -614,13 +895,15 @@ mod tests {
             max_events: 3,
             max_active_timers: 2,
             max_timer_history: 2,
+            max_memories: 3,
+            max_memory_bytes: 80,
         }
     }
 
     #[test]
     fn migrations_create_current_schema() {
         let store = StateStore::in_memory(limits()).expect("store opens");
-        assert_eq!(StateStore::schema_version(), 1);
+        assert_eq!(StateStore::schema_version(), 2);
         assert_eq!(store.event_count(), Ok(0));
     }
 
@@ -730,5 +1013,77 @@ mod tests {
         let timers = store.scheduled_timers().expect("timers list");
         assert_eq!(timers[0].id, "sooner");
         assert_eq!(timers[1].id, "later");
+    }
+
+    #[test]
+    fn explicit_memories_are_bounded_and_replaceable() {
+        let mut store = StateStore::in_memory(limits()).expect("store opens");
+        let clock = ManualClock::new(1_000);
+        store
+            .remember(
+                &clock,
+                "tea",
+                MemoryScope::LongTerm,
+                "The user prefers masala tea.",
+                None,
+            )
+            .expect("memory is stored");
+        clock.advance(Duration::from_millis(10));
+        let updated = store
+            .remember(
+                &clock,
+                "tea",
+                MemoryScope::LongTerm,
+                "The user prefers ginger tea.",
+                None,
+            )
+            .expect("memory is updated");
+        assert_eq!(updated.created_at_ms, 1_000);
+        assert_eq!(updated.updated_at_ms, 1_010);
+        let memories = store
+            .memories(&clock, MemoryScope::LongTerm, 3)
+            .expect("memories list");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].content, "The user prefers ginger tea.");
+        store.forget_memory("tea").expect("memory is forgotten");
+        assert!(
+            store
+                .memories(&clock, MemoryScope::LongTerm, 3)
+                .expect("memories list")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn session_memory_expires_without_exposing_credentials() {
+        let mut store = StateStore::in_memory(limits()).expect("store opens");
+        let clock = ManualClock::new(1_000);
+        store
+            .remember(
+                &clock,
+                "current-task",
+                MemoryScope::Session,
+                "We are choosing flowers.",
+                Some(2_000),
+            )
+            .expect("session memory is stored");
+        assert!(
+            store
+                .remember(
+                    &clock,
+                    "unsafe",
+                    MemoryScope::LongTerm,
+                    "My API key is abc123",
+                    None,
+                )
+                .is_err()
+        );
+        clock.set(2_000);
+        assert!(
+            store
+                .memories(&clock, MemoryScope::Session, 3)
+                .expect("expired memory is pruned")
+                .is_empty()
+        );
     }
 }

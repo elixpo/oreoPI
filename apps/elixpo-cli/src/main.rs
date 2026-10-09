@@ -22,7 +22,9 @@ use oreo_audio::{
     ConvertingSource, PushToTalkState, STT_FORMAT, VoskTranscriber, WavSource, transcribe_source,
 };
 use oreo_core::{AssistantRuntime, CancellationToken, FakeHarness, RuntimeConfig, StdoutSink};
-use oreo_local_api::{PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request};
+use oreo_local_api::{
+    ApiMemoryScope, PROTOCOL_VERSION, Request, Response, RuntimePhase, send_request,
+};
 
 const OREO_PERSONA: &str = include_str!("../../../config/persona.md");
 const DEFAULT_AGENT_MODEL: &str = "openai/gpt-5.4-nano";
@@ -341,7 +343,8 @@ fn daemon_command(
 fn memory_command(
     arguments: impl Iterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    match arguments.collect::<Vec<_>>().as_slice() {
+    let arguments = arguments.collect::<Vec<_>>();
+    match arguments.as_slice() {
         [command] if command == "list" => {
             let memories = list_memory(session_root()?)?;
             if memories.is_empty() {
@@ -375,7 +378,84 @@ fn memory_command(
             println!("retained_metadata_events: {}", memory.retained_events);
             Ok(())
         }
-        _ => Err("usage: elixpo memory <list|inspect <id>>".into()),
+        [command] if command == "durable" => list_explicit_memories(ApiMemoryScope::LongTerm),
+        [command] if command == "short" => list_explicit_memories(ApiMemoryScope::Session),
+        [command, id, content @ ..] if command == "remember" && !content.is_empty() => {
+            remember_explicit(id, ApiMemoryScope::LongTerm, content.join(" "), None)
+        }
+        [command, id, seconds, content @ ..]
+            if command == "remember-session" && !content.is_empty() =>
+        {
+            let seconds = seconds
+                .parse::<u64>()
+                .map_err(|_| "memory seconds must be a positive integer")?;
+            let duration_ms = seconds
+                .checked_mul(1_000)
+                .filter(|duration| *duration > 0)
+                .ok_or("memory duration is invalid")?;
+            remember_explicit(
+                id,
+                ApiMemoryScope::Session,
+                content.join(" "),
+                Some(duration_ms),
+            )
+        }
+        [command, id] if command == "forget" => {
+            match daemon_request(&Request::MemoryForget {
+                version: PROTOCOL_VERSION,
+                id: id.clone(),
+            })? {
+                Response::MemoryForgotten { .. } => {
+                    println!("Memory {id} forgotten.");
+                    Ok(())
+                }
+                response => unexpected_response(&response),
+            }
+        }
+        _ => Err(
+            "usage: elixpo memory <list|inspect <session-id>|durable|short|remember <id> <text>|remember-session <id> <seconds> <text>|forget <id>>"
+                .into(),
+        ),
+    }
+}
+
+fn list_explicit_memories(scope: ApiMemoryScope) -> Result<(), Box<dyn std::error::Error>> {
+    match daemon_request(&Request::MemoryList {
+        version: PROTOCOL_VERSION,
+        scope,
+    })? {
+        Response::MemoryList { memories, .. } => {
+            if memories.is_empty() {
+                println!("No explicit memories.");
+            } else {
+                for memory in memories {
+                    println!("{}\t{}", memory.id, memory.content);
+                }
+            }
+            Ok(())
+        }
+        response => unexpected_response(&response),
+    }
+}
+
+fn remember_explicit(
+    id: &str,
+    scope: ApiMemoryScope,
+    content: String,
+    duration_ms: Option<u64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match daemon_request(&Request::MemoryRemember {
+        version: PROTOCOL_VERSION,
+        id: id.to_owned(),
+        scope,
+        content,
+        duration_ms,
+    })? {
+        Response::MemoryRemembered { .. } => {
+            println!("Memory {id} saved.");
+            Ok(())
+        }
+        response => unexpected_response(&response),
     }
 }
 

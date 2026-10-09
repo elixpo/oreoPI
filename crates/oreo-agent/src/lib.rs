@@ -25,7 +25,7 @@ use crumb_llm::{LlmProvider, TokenUsage};
 mod builtins;
 mod capability;
 
-pub use builtins::{DeviceStatus, register_device_status};
+pub use builtins::{DeviceStatus, register_device_status, register_memory_recall};
 pub use capability::{
     ApprovalUi, Capability, CapabilityError, CapabilityLocation, CapabilityRegistry,
     ConfirmationPolicy, DenyApprovalUi,

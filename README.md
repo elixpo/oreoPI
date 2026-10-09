@@ -53,6 +53,8 @@ cargo run -p elixpo-cli -- timer list
 cargo run -p elixpo-cli -- timer cancel tea
 cargo run -p elixpo-cli -- memory list
 cargo run -p elixpo-cli -- memory inspect <session-id>
+cargo run -p elixpo-cli -- memory durable
+cargo run -p elixpo-cli -- memory remember locale The user prefers British English
 cargo run -p elixpo-cli -- daemon stop
 cargo run -p elixpo-cli -- ask --offline "What is running?"
 POLLINATIONS_API_KEY=... cargo run -p elixpo-cli -- ask "Hello Oreo"
@@ -70,7 +72,8 @@ for the non-root Compose workflow and multi-architecture build commands.
 
 `OREO_STATE_DIR` can override the local state location. Session journals store
 only bounded metadata and digests; prompts, response text, credentials, and
-tool payloads are not persisted.
+tool payloads are not persisted. Explicit short- and long-term memory is
+documented in [the local memory guide](docs/memory.md).
 
 The daemon emits newline-delimited JSON operational logs to standard error.
 Their schema accepts only a timestamp, component, fixed event name, and fixed

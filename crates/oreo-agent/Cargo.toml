@@ -11,6 +11,7 @@ crumb-agent = { path = "../crumb-agent" }
 crumb-harness = { path = "../crumb-harness" }
 crumb-llm = { path = "../crumb-llm" }
 crumb-pollinations = { path = "../crumb-pollinations" }
+oreo-state = { path = "../oreo-state" }
 serde_json.workspace = true
 
 [dev-dependencies]

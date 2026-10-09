@@ -1179,6 +1179,7 @@ dependencies = [
  "crumb-harness",
  "crumb-llm",
  "crumb-pollinations",
+ "oreo-state",
  "serde_json",
  "tempfile",
  "tokio",
