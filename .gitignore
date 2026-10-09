@@ -13,3 +13,4 @@ __pycache__/
 /models/cache/*
 !/models/cache/.gitkeep
 /models/training/
+/tests/audio/corpora/cache/

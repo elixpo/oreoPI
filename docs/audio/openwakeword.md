@@ -171,28 +171,34 @@ can be compared without replacing the model artifact.
 
 ## Background soak
 
-Capture ambient room, television, music, and ordinary conversation without
-intentionally addressing Oreo. One hour is the first gate; eight hours is the
-selection gate. A one-hour PCM16 recording is about 110 MiB:
+The reproducible first gate uses one hour from the official LibriSpeech
+`test-other` corpus. It is challenging English audiobook speech at 16 kHz and
+is licensed CC BY 4.0. The builder downloads the 328 MB archive, checks the MD5
+digest published by OpenSLR, caches the source outside Git, and creates a
+deterministic PCM16 mono WAV:
 
 ```bash
-rtk arecord -q -f S16_LE -r 16000 -c 1 -d 3600 \
-  target/audio-bench/wake-background-1h.wav
+rtk ./scripts/fetch-wake-soak-corpus.sh
 ```
 
 Process it with the memory-bounded cascade runner:
 
 ```bash
 rtk .venv-wake/bin/python scripts/soak-wake.py \
-  --wav target/audio-bench/wake-background-1h.wav \
+  --wav target/audio-bench/librispeech-test-other-1h.wav \
   --threshold 0.005 \
-  --output target/audio-bench/wake-background-1h.json
+  --output target/audio-bench/wake-librispeech-1h.json
 ```
 
 The runner retains only event timestamps, scores, transcripts, and decisions in
 the report. Candidate rate measures Vosk/CPU pressure; accepted false
 activations determine the user-visible gate. The candidate must record zero
-accepted activations in the initial hour before the eight-hour run.
+accepted activations in this speech-heavy hour before a longer corpus run.
+
+This reproducible test replaces the laptop-room recording, not the final device
+acceptance test. Once Oreo moves to its SBC and microphone enclosure, it still
+needs an on-device ambient soak because microphone gain, echo, room acoustics,
+television, and music are hardware-specific.
 
 ## Licence boundary
 
