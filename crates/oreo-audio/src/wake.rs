@@ -553,12 +553,20 @@ mod tests {
     fn ambient_gate_accepts_natural_warm_followups_and_can_sleep() {
         let mut gate = AmbientAttentionGate::new("Orion").expect("gate trains");
         assert_eq!(
+            gate.assess("huh").expect("text scores"),
+            AmbientAttentionDecision::Ignore
+        );
+        assert_eq!(
             gate.assess("Orion").expect("text scores"),
             AmbientAttentionDecision::AttentionRaised
         );
         assert_eq!(
             gate.assess("hey Orion").expect("text scores"),
             AmbientAttentionDecision::AttentionRaised
+        );
+        assert_eq!(
+            gate.assess("huh").expect("text scores"),
+            AmbientAttentionDecision::Ignore
         );
         assert_eq!(
             gate.assess("explain how stars form").expect("text scores"),

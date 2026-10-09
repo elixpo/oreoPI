@@ -26,6 +26,7 @@ pub struct AmbientVoicePipeline {
     last_live_transcript: String,
     latest_partial: String,
     latest_final: Option<String>,
+    latest_final_accepted: bool,
     latest_attention_match: bool,
     barge_in_confirmed: bool,
 }
@@ -65,6 +66,7 @@ impl AmbientVoicePipeline {
             last_live_transcript: String::new(),
             latest_partial: String::new(),
             latest_final: None,
+            latest_final_accepted: false,
             latest_attention_match: false,
             barge_in_confirmed: false,
         })
@@ -96,6 +98,11 @@ impl AmbientVoicePipeline {
 
     pub fn take_final_transcript(&mut self) -> Option<String> {
         self.latest_final.take()
+    }
+
+    #[must_use]
+    pub const fn latest_final_was_accepted(&self) -> bool {
+        self.latest_final_accepted
     }
 
     pub fn take_attention_match(&mut self) -> bool {
@@ -168,6 +175,7 @@ impl AmbientVoicePipeline {
         self.transcriber.abort();
         self.latest_partial.clear();
         self.latest_final = None;
+        self.latest_final_accepted = false;
         self.latest_attention_match = false;
     }
 
@@ -185,6 +193,7 @@ impl AmbientVoicePipeline {
         self.last_live_transcript.clear();
         self.latest_partial.clear();
         self.latest_final = (!transcript.trim().is_empty()).then(|| transcript.clone());
+        self.latest_final_accepted = false;
 
         if (transcript.trim().is_empty() && !attention_detected)
             || transcript.len() > self.limits.max_transcript_bytes
@@ -214,14 +223,17 @@ impl AmbientVoicePipeline {
         match decision {
             AmbientAttentionDecision::Ignore => Ok(None),
             AmbientAttentionDecision::AttentionRaised => {
+                self.latest_final_accepted = true;
                 self.session_samples_left = CONVERSATION_WINDOW_SAMPLES;
                 Ok(Some(WakePipelineEvent::WakeAccepted { score: 0.0 }))
             }
             AmbientAttentionDecision::Command => {
+                self.latest_final_accepted = true;
                 self.session_samples_left = CONVERSATION_WINDOW_SAMPLES;
                 Ok(Some(WakePipelineEvent::CommandReady { transcript }))
             }
             AmbientAttentionDecision::Sleep => {
+                self.latest_final_accepted = true;
                 self.session_samples_left = 0;
                 Ok(Some(WakePipelineEvent::ConversationEnded))
             }

@@ -382,10 +382,18 @@ mod unix {
                     last_debug_partial.clear();
                 }
             }
+            let final_accepted = pipeline.latest_final_was_accepted();
             if let Some(final_text) = pipeline.take_final_transcript()
                 && config.debug_transcripts
             {
-                write_debug_event("final_transcript", Some(&final_text));
+                write_debug_event(
+                    if final_accepted {
+                        "transcript_accepted"
+                    } else {
+                        "transcript_rejected"
+                    },
+                    Some(&final_text),
+                );
             }
             if pipeline.take_attention_match() && config.debug_transcripts {
                 write_debug_event("acoustic_attention_match", None);
