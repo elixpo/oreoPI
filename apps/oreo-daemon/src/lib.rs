@@ -359,7 +359,7 @@ mod unix {
         let mut source = ConvertingSource::new(input, STT_FORMAT, limits).map_err(voice_error)?;
         write_log(LogEvent::VoiceListening, LogOutcome::Succeeded);
         #[cfg(feature = "voice-agent")]
-        let mut last_phase = ConversationPhase::Listening;
+        let (mut last_phase, mut barge_in_confirmations) = (ConversationPhase::Listening, 0_u8);
 
         while !shared.stopping.load(Ordering::Acquire) {
             let Some(chunk) = source.next_chunk(&cancellation).map_err(voice_error)? else {
@@ -424,7 +424,7 @@ mod unix {
                     }
                 }
                 Some(WakePipelineEvent::PossibleBargeIn { transcript }) => {
-                    handle_possible_barge_in(config, &transcript);
+                    confirm_barge(config, &transcript, &mut barge_in_confirmations);
                 }
                 None => {}
             }
@@ -443,19 +443,28 @@ mod unix {
     }
 
     #[cfg(feature = "voice-agent")]
-    fn handle_possible_barge_in(config: &VoiceConfig, transcript: &str) {
-        if let Some(agent) = &config.agent_ingress
-            && !agent.resembles_output(transcript)
+    fn confirm_barge(config: &VoiceConfig, transcript: &str, confirmations: &mut u8) {
+        let Some(agent) = &config.agent_ingress else {
+            *confirmations = 0;
+            return;
+        };
+        if agent.resembles_output(transcript) {
+            *confirmations = 0;
+            return;
+        }
+        *confirmations = confirmations.saturating_add(1);
+        if *confirmations >= 2
             && agent
                 .interrupt_speech()
                 .is_ok_and(|interrupted| interrupted)
         {
+            *confirmations = 0;
             write_log(LogEvent::VoiceBargeIn, LogOutcome::Succeeded);
         }
     }
 
     #[cfg(not(feature = "voice-agent"))]
-    fn handle_possible_barge_in(_config: &VoiceConfig, _transcript: &str) {}
+    fn confirm_barge(_config: &VoiceConfig, _transcript: &str, _confirmations: &mut u8) {}
 
     #[cfg(feature = "voice-agent")]
     fn update_conversation_phase(

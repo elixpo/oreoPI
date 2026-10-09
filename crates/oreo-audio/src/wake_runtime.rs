@@ -239,7 +239,7 @@ impl WakeCommandPipeline {
                 last_live_transcript,
             )? {
                 EngagedCaptureProgress::Continue => Ok(None),
-                EngagedCaptureProgress::BargeIn(transcript) => Ok(Some(barge_in(transcript))),
+                EngagedCaptureProgress::BargeIn(text) => filter_barge(&self.warm_classifier, text),
                 EngagedCaptureProgress::Finished(remaining) => {
                     self.finish_engaged_capture(remaining, cancellation)
                 }
@@ -564,6 +564,15 @@ fn has_barge_in_evidence(transcript: &str) -> bool {
 
 fn barge_in(transcript: String) -> WakePipelineEvent {
     WakePipelineEvent::PossibleBargeIn { transcript }
+}
+
+fn filter_barge(
+    classifier: &WarmTurnClassifier,
+    transcript: String,
+) -> Result<Option<WakePipelineEvent>, AudioError> {
+    Ok(classifier
+        .accepts(&transcript)?
+        .then(|| barge_in(transcript)))
 }
 
 #[cfg(test)]
