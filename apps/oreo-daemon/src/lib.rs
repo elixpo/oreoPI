@@ -359,7 +359,7 @@ mod unix {
         let mut source = ConvertingSource::new(input, STT_FORMAT, limits).map_err(voice_error)?;
         write_log(LogEvent::VoiceListening, LogOutcome::Succeeded);
         #[cfg(feature = "voice-agent")]
-        let (mut last_phase, mut barge_in_confirmations) = (ConversationPhase::Listening, 0_u8);
+        let (mut last_phase, mut barge_checks) = (ConversationPhase::Listening, 0_u8);
 
         while !shared.stopping.load(Ordering::Acquire) {
             let Some(chunk) = source.next_chunk(&cancellation).map_err(voice_error)? else {
@@ -424,7 +424,7 @@ mod unix {
                     }
                 }
                 Some(WakePipelineEvent::PossibleBargeIn { transcript }) => {
-                    confirm_barge(config, &transcript, &mut barge_in_confirmations);
+                    confirm_barge(config, &mut pipeline, &transcript, &mut barge_checks);
                 }
                 None => {}
             }
@@ -443,7 +443,12 @@ mod unix {
     }
 
     #[cfg(feature = "voice-agent")]
-    fn confirm_barge(config: &VoiceConfig, transcript: &str, confirmations: &mut u8) {
+    fn confirm_barge(
+        config: &VoiceConfig,
+        pipeline: &mut WakeCommandPipeline,
+        transcript: &str,
+        confirmations: &mut u8,
+    ) {
         let Some(agent) = &config.agent_ingress else {
             *confirmations = 0;
             return;
@@ -459,12 +464,19 @@ mod unix {
                 .is_ok_and(|interrupted| interrupted)
         {
             *confirmations = 0;
+            let _ = pipeline.confirm_barge_in();
             write_log(LogEvent::VoiceBargeIn, LogOutcome::Succeeded);
         }
     }
 
     #[cfg(not(feature = "voice-agent"))]
-    fn confirm_barge(_config: &VoiceConfig, _transcript: &str, _confirmations: &mut u8) {}
+    fn confirm_barge(
+        _config: &VoiceConfig,
+        _pipeline: &mut WakeCommandPipeline,
+        _transcript: &str,
+        _confirmations: &mut u8,
+    ) {
+    }
 
     #[cfg(feature = "voice-agent")]
     fn update_conversation_phase(
