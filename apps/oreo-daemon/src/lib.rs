@@ -374,6 +374,15 @@ mod unix {
                             "voice runtime produced an empty command",
                         ));
                     }
+                    #[cfg(feature = "voice-agent")]
+                    if config
+                        .agent_ingress
+                        .as_ref()
+                        .is_some_and(|agent| agent.resembles_output(&transcript))
+                    {
+                        write_log(LogEvent::VoiceEchoRejected, LogOutcome::Denied);
+                        continue;
+                    }
                     write_log(LogEvent::VoiceCommandReady, LogOutcome::Succeeded);
                     #[cfg(feature = "voice-agent")]
                     if let Some(agent) = &config.agent_ingress {
@@ -736,6 +745,8 @@ mod unix {
         VoiceClarificationNeeded,
         #[cfg(feature = "voice-runtime")]
         VoiceConversationEnded,
+        #[cfg(feature = "voice-agent")]
+        VoiceEchoRejected,
         #[cfg(feature = "voice-runtime")]
         VoiceFault,
         #[cfg(feature = "voice-runtime")]
@@ -788,6 +799,8 @@ mod unix {
                 Self::VoiceClarificationNeeded => "voice_clarification_needed",
                 #[cfg(feature = "voice-runtime")]
                 Self::VoiceConversationEnded => "voice_conversation_ended",
+                #[cfg(feature = "voice-agent")]
+                Self::VoiceEchoRejected => "voice_echo_rejected",
                 #[cfg(feature = "voice-runtime")]
                 Self::VoiceFault => "voice_fault",
                 #[cfg(feature = "voice-runtime")]

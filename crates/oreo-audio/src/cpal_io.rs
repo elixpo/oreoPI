@@ -39,6 +39,7 @@ pub struct AudioIoSnapshot {
     pub captured_chunks: u64,
     pub dropped_chunks: u64,
     pub played_samples: u64,
+    pub queued_samples: u64,
     pub underrun_callbacks: u64,
     pub stream_errors: u64,
 }
@@ -48,6 +49,7 @@ struct IoCounters {
     captured_chunks: AtomicU64,
     dropped_chunks: AtomicU64,
     played_samples: AtomicU64,
+    queued_samples: AtomicU64,
     underrun_callbacks: AtomicU64,
     stream_errors: AtomicU64,
 }
@@ -58,6 +60,7 @@ impl IoCounters {
             captured_chunks: self.captured_chunks.load(Ordering::Relaxed),
             dropped_chunks: self.dropped_chunks.load(Ordering::Relaxed),
             played_samples: self.played_samples.load(Ordering::Relaxed),
+            queued_samples: self.queued_samples.load(Ordering::Acquire),
             underrun_callbacks: self.underrun_callbacks.load(Ordering::Relaxed),
             stream_errors: self.stream_errors.load(Ordering::Relaxed),
         }
@@ -478,11 +481,16 @@ impl AudioOutput for CpalOutput {
             .try_recv()
             .map_err(|_| AudioError::new(AudioErrorKind::Capacity, "speaker queue is full"))?;
         samples.extend_from_slice(chunk.samples());
+        let sample_count = u64::try_from(samples.len()).unwrap_or(u64::MAX);
         let sender = self
             .sender
             .as_ref()
             .ok_or_else(|| AudioError::new(AudioErrorKind::Backend, "speaker is not started"))?;
+        self.counters
+            .queued_samples
+            .fetch_add(sample_count, Ordering::AcqRel);
         if let Err(error) = sender.try_send(samples) {
+            subtract_queued(&self.counters.queued_samples, sample_count);
             let (mut rejected, failure) = match error {
                 TrySendError::Full(rejected) => (
                     rejected,
@@ -504,6 +512,7 @@ impl AudioOutput for CpalOutput {
         self.stream = None;
         self.recycle_receiver = None;
         self.recycle_sender = None;
+        self.counters.queued_samples.store(0, Ordering::Release);
     }
 }
 
@@ -593,6 +602,7 @@ impl PlaybackBuffer {
     fn fill<T: Sample + FromSample<i16>>(&mut self, output: &mut [T]) {
         let output_len = output.len();
         let mut underrun = false;
+        let mut consumed = 0_u64;
         for sample in output {
             if self.cursor == self.current.len() && !self.disconnected {
                 if !self.current.is_empty() {
@@ -612,6 +622,7 @@ impl PlaybackBuffer {
             let value = self.current.get(self.cursor).copied().unwrap_or(0);
             if self.cursor < self.current.len() {
                 self.cursor += 1;
+                consumed = consumed.saturating_add(1);
             }
             *sample = T::from_sample(value);
         }
@@ -619,12 +630,19 @@ impl PlaybackBuffer {
             u64::try_from(output_len).unwrap_or(u64::MAX),
             Ordering::Relaxed,
         );
+        subtract_queued(&self.counters.queued_samples, consumed);
         if underrun {
             self.counters
                 .underrun_callbacks
                 .fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+fn subtract_queued(counter: &AtomicU64, samples: u64) {
+    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+        Some(queued.saturating_sub(samples))
+    });
 }
 
 const fn device_error() -> AudioError {
@@ -664,6 +682,9 @@ mod tests {
     #[test]
     fn playback_uses_silence_on_underrun() {
         let counters = Arc::new(IoCounters::default());
+        counters
+            .queued_samples
+            .store(2, std::sync::atomic::Ordering::Release);
         let (sender, receiver) = sync_channel(1);
         let (recycle_sender, _recycle_receiver) = sync_channel(2);
         sender.send(vec![10, 20]).expect("fixture queues");
@@ -672,5 +693,6 @@ mod tests {
         playback.fill(&mut output);
         assert_eq!(output, [10, 20, 0, 0]);
         assert_eq!(counters.snapshot().underrun_callbacks, 1);
+        assert_eq!(counters.snapshot().queued_samples, 0);
     }
 }

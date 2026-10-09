@@ -151,3 +151,13 @@ cues in `config/voice-steering-cues.tsv` can queue or replace work. The agent
 retains at most four completed conversation turns and requests at most 256
 output tokens. Speech, agent, and cancellation logs expose only fixed lifecycle
 events; transcripts, response text, tool payloads, and credentials are excluded.
+
+The microphone remains live during playback. The speaker adapter tracks queued
+samples rather than treating synthesis completion as playback completion. While
+audio is active, a bounded transient reference of Oreo's last eight spoken
+fragments rejects high-overlap microphone transcripts as speaker echo, with a
+750 ms tail for room reverberation. A distinct utterance remains a barge-in: it
+stops the output stream immediately and steers or queues the next turn. The
+reference is never persisted or logged. This is application-level echo
+protection; SBC images may additionally enable their codec's hardware AEC when
+the selected microphone and speaker expose it.

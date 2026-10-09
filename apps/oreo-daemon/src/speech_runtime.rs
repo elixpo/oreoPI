@@ -1,9 +1,11 @@
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use oreo_audio::{
     AudioErrorKind, AudioLimits, AudioOutput, CpalOutput, PcmConverter, PocketTtsConfig,
@@ -12,6 +14,8 @@ use oreo_audio::{
 use oreo_core::CancellationToken;
 
 const SPEECH_QUEUE_CAPACITY: usize = 16;
+const ECHO_REFERENCE_CAPACITY: usize = 8;
+const ECHO_TAIL: Duration = Duration::from_millis(750);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SpeechRuntimeEvent {
@@ -32,6 +36,7 @@ pub(crate) struct SpeechIngress {
     sender: SyncSender<SpeechRequest>,
     interrupt: Arc<AtomicBool>,
     speaking: Arc<AtomicBool>,
+    echo: Arc<Mutex<PlaybackEchoGuard>>,
 }
 
 impl SpeechIngress {
@@ -42,11 +47,17 @@ impl SpeechIngress {
     ) -> Result<(), SpeechRuntimeError> {
         let text = normalize_for_speech(text, AudioLimits::sbc())
             .map_err(|_| SpeechRuntimeError::new("speech text is invalid"))?;
+        let reference = text.clone();
         match self.sender.try_send(SpeechRequest {
             text,
             cancellation: cancellation.clone(),
         }) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Ok(mut echo) = self.echo.lock() {
+                    echo.remember(&reference);
+                }
+                Ok(())
+            }
             Err(TrySendError::Full(_)) => Err(SpeechRuntimeError::new("speech queue is full")),
             Err(TrySendError::Disconnected(_)) => {
                 Err(SpeechRuntimeError::new("speech runtime is unavailable"))
@@ -61,6 +72,12 @@ impl SpeechIngress {
 
     pub(crate) fn is_speaking(&self) -> bool {
         self.speaking.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn resembles_output(&self, transcript: &str) -> bool {
+        self.echo
+            .lock()
+            .is_ok_and(|echo| echo.resembles(transcript, self.is_speaking()))
     }
 }
 
@@ -86,25 +103,27 @@ impl SpeechRuntime {
         let (sender, receiver) = mpsc::sync_channel(SPEECH_QUEUE_CAPACITY);
         let interrupt = Arc::new(AtomicBool::new(false));
         let speaking = Arc::new(AtomicBool::new(false));
+        let echo = Arc::new(Mutex::new(PlaybackEchoGuard::default()));
         let ingress = SpeechIngress {
             sender,
             interrupt: interrupt.clone(),
             speaking: speaking.clone(),
+            echo: echo.clone(),
         };
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_stopping = stopping.clone();
+        let loop_context = SpeechLoopContext {
+            receiver,
+            stopping: worker_stopping,
+            interrupt,
+            speaking,
+            echo,
+            emit,
+        };
         let handle = thread::Builder::new()
             .name("oreo-speech".to_owned())
             .spawn(move || {
-                speech_loop(
-                    synthesizer,
-                    output,
-                    &receiver,
-                    &worker_stopping,
-                    &interrupt,
-                    &speaking,
-                    emit,
-                );
+                speech_loop(synthesizer, output, &loop_context);
             })
             .map_err(|_| SpeechRuntimeError::new("speech thread could not start"))?;
         Ok(Self {
@@ -129,46 +148,59 @@ impl SpeechRuntime {
     }
 }
 
+struct SpeechLoopContext {
+    receiver: Receiver<SpeechRequest>,
+    stopping: Arc<AtomicBool>,
+    interrupt: Arc<AtomicBool>,
+    speaking: Arc<AtomicBool>,
+    echo: Arc<Mutex<PlaybackEchoGuard>>,
+    emit: fn(SpeechRuntimeEvent),
+}
+
 fn speech_loop(
     mut synthesizer: PocketTtsSynthesizer,
     mut output: CpalOutput,
-    receiver: &Receiver<SpeechRequest>,
-    stopping: &AtomicBool,
-    interrupt: &AtomicBool,
-    speaking: &AtomicBool,
-    emit: fn(SpeechRuntimeEvent),
+    context: &SpeechLoopContext,
 ) {
     let startup = CancellationToken::new();
     if synthesizer.prewarm(&startup).is_err() {
-        emit(SpeechRuntimeEvent::Failed);
+        (context.emit)(SpeechRuntimeEvent::Failed);
         return;
     }
     let native_format = output.native_format();
     if output.begin(native_format).is_err() {
-        emit(SpeechRuntimeEvent::Failed);
+        (context.emit)(SpeechRuntimeEvent::Failed);
         return;
     }
     let mut output_active = true;
-    emit(SpeechRuntimeEvent::Ready);
-    while !stopping.load(Ordering::Acquire) {
-        if interrupt.swap(false, Ordering::AcqRel) {
+    (context.emit)(SpeechRuntimeEvent::Ready);
+    while !context.stopping.load(Ordering::Acquire) {
+        if context.interrupt.swap(false, Ordering::AcqRel) {
             output.stop();
             output_active = false;
-            speaking.store(false, Ordering::Release);
-            emit(SpeechRuntimeEvent::Cancelled);
+            context.speaking.store(false, Ordering::Release);
+            (context.emit)(SpeechRuntimeEvent::Cancelled);
         }
-        let request = match receiver.recv_timeout(Duration::from_millis(100)) {
+        let request = match context.receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(request) => request,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if context.speaking.load(Ordering::Acquire) && output.stats().queued_samples == 0 {
+                    context.speaking.store(false, Ordering::Release);
+                    if let Ok(mut echo) = context.echo.lock() {
+                        echo.mark_finished();
+                    }
+                }
+                continue;
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         if request.cancellation.is_cancelled() {
             continue;
         }
-        speaking.store(true, Ordering::Release);
-        emit(SpeechRuntimeEvent::Started);
+        context.speaking.store(true, Ordering::Release);
+        (context.emit)(SpeechRuntimeEvent::Started);
         if !output_active && output.begin(native_format).is_err() {
-            emit(SpeechRuntimeEvent::Failed);
+            (context.emit)(SpeechRuntimeEvent::Failed);
             continue;
         }
         output_active = true;
@@ -195,24 +227,83 @@ fn speech_loop(
             Ok(())
         });
         match result {
-            Ok(()) => emit(SpeechRuntimeEvent::Finished),
+            Ok(()) => (context.emit)(SpeechRuntimeEvent::Finished),
             Err(error) if error.kind == AudioErrorKind::Cancelled => {
                 output.stop();
                 output_active = false;
-                speaking.store(false, Ordering::Release);
-                emit(SpeechRuntimeEvent::Cancelled);
+                context.speaking.store(false, Ordering::Release);
+                (context.emit)(SpeechRuntimeEvent::Cancelled);
             }
             Err(_) => {
                 output.stop();
                 output_active = false;
-                speaking.store(false, Ordering::Release);
-                emit(SpeechRuntimeEvent::Failed);
+                context.speaking.store(false, Ordering::Release);
+                (context.emit)(SpeechRuntimeEvent::Failed);
             }
         }
     }
     output.stop();
-    speaking.store(false, Ordering::Release);
+    context.speaking.store(false, Ordering::Release);
     synthesizer.shutdown();
+}
+
+#[derive(Default)]
+struct PlaybackEchoGuard {
+    references: VecDeque<HashSet<String>>,
+    tail_until: Option<Instant>,
+}
+
+impl PlaybackEchoGuard {
+    fn remember(&mut self, text: &str) {
+        let words = lexical_words(text);
+        if words.is_empty() {
+            return;
+        }
+        if self.references.len() == ECHO_REFERENCE_CAPACITY {
+            self.references.pop_front();
+        }
+        self.references.push_back(words);
+        self.tail_until = None;
+    }
+
+    fn mark_finished(&mut self) {
+        self.tail_until = Some(Instant::now() + ECHO_TAIL);
+    }
+
+    fn resembles(&self, transcript: &str, speaking: bool) -> bool {
+        if !speaking
+            && self
+                .tail_until
+                .is_none_or(|deadline| Instant::now() > deadline)
+        {
+            return false;
+        }
+        let heard = lexical_words(transcript);
+        if heard.is_empty() {
+            return false;
+        }
+        self.references.iter().any(|reference| {
+            let shared = heard.intersection(reference).count();
+            let smaller = heard.len().min(reference.len());
+            shared == smaller && smaller == 1 || smaller >= 2 && shared * 4 >= smaller * 3
+        })
+    }
+}
+
+fn lexical_words(text: &str) -> HashSet<String> {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn write_with_backpressure(
@@ -249,3 +340,29 @@ impl std::fmt::Display for SpeechRuntimeError {
 }
 
 impl std::error::Error for SpeechRuntimeError {}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::PlaybackEchoGuard;
+
+    #[test]
+    fn echo_guard_rejects_output_but_preserves_barge_in() {
+        let mut guard = PlaybackEchoGuard::default();
+        guard.remember("The front door is locked and the kitchen light is off.");
+
+        assert!(guard.resembles("the front door is locked", true));
+        assert!(!guard.resembles("Oreo stop and set a timer", true));
+    }
+
+    #[test]
+    fn echo_guard_has_only_a_short_post_playback_tail() {
+        let mut guard = PlaybackEchoGuard::default();
+        guard.remember("Your timer is now running.");
+        guard.mark_finished();
+        assert!(guard.resembles("your timer is running", false));
+        guard.tail_until = std::time::Instant::now().checked_sub(Duration::from_millis(1));
+        assert!(!guard.resembles("your timer is running", false));
+    }
+}

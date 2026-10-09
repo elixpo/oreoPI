@@ -201,6 +201,10 @@ impl VoiceAgentIngress {
         *active = Some(cancellation);
         Ok(())
     }
+
+    pub(crate) fn resembles_output(&self, transcript: &str) -> bool {
+        self.speech.resembles_output(transcript)
+    }
 }
 
 fn signal(sender: &SyncSender<()>) -> Result<(), VoiceAgentError> {
