@@ -256,7 +256,12 @@ pub struct QueuedAgentTurn {
 /// [`OreoAgent`] without persisting voice transcripts.
 pub struct AgentTurnController {
     queue: SteeringQueue,
-    active: Option<CancellationToken>,
+    active: Option<ActiveAgentTurn>,
+}
+
+struct ActiveAgentTurn {
+    cancellation: CancellationToken,
+    message: String,
 }
 
 impl AgentTurnController {
@@ -288,7 +293,22 @@ impl AgentTurnController {
         action: SteeringAction,
         message: &str,
     ) -> Result<TurnSubmission, AgentError> {
-        self.queue.submit(action, message).map_err(|_| {
+        let preserved;
+        let queued_message = if action == SteeringAction::Steer {
+            if let Some(active) = &self.active {
+                preserved = format!(
+                    "Continue the active request while applying this correction.\nActive request: {}\nCorrection: {}",
+                    active.message,
+                    message.trim()
+                );
+                preserved.as_str()
+            } else {
+                message
+            }
+        } else {
+            message
+        };
+        self.queue.submit(action, queued_message).map_err(|_| {
             AgentError::new(
                 AgentErrorKind::Steering,
                 "agent steering queue rejected the turn",
@@ -297,7 +317,7 @@ impl AgentTurnController {
         let interrupts = matches!(action, SteeringAction::Steer | SteeringAction::Replace)
             && self.active.is_some();
         if interrupts && let Some(active) = &self.active {
-            active.cancel();
+            active.cancellation.cancel();
         }
         Ok(if interrupts {
             TurnSubmission::InterruptRequested
@@ -314,7 +334,10 @@ impl AgentTurnController {
         }
         let message = self.queue.pop()?;
         let cancellation = CancellationToken::default();
-        self.active = Some(cancellation.clone());
+        self.active = Some(ActiveAgentTurn {
+            cancellation: cancellation.clone(),
+            message: message.clone(),
+        });
         Some(QueuedAgentTurn {
             message,
             cancellation,
@@ -326,7 +349,7 @@ impl AgentTurnController {
         if self
             .active
             .as_ref()
-            .is_some_and(|active| active.shares_signal_with(cancellation))
+            .is_some_and(|active| active.cancellation.shares_signal_with(cancellation))
         {
             self.active = None;
             true
@@ -337,7 +360,7 @@ impl AgentTurnController {
 
     pub fn cancel_all(&mut self) {
         if let Some(active) = self.active.take() {
-            active.cancel();
+            active.cancellation.cancel();
         }
         self.queue.clear();
     }
@@ -764,7 +787,8 @@ mod tests {
         assert!(controller.finish_active(&first.cancellation));
 
         let steered = controller.begin_next().expect("steer starts next");
-        assert_eq!(steered.message, "actually do this");
+        assert!(steered.message.contains("Active request: first"));
+        assert!(steered.message.contains("Correction: actually do this"));
         assert!(controller.finish_active(&steered.cancellation));
         let chained = controller.begin_next().expect("queued turn follows");
         assert_eq!(chained.message, "later");

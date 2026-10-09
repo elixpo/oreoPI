@@ -44,7 +44,10 @@ pub use stream::{SpeechChunker, transcribe_source};
 pub use vad::{EnergyVad, VadConfig, VadDecision};
 #[cfg(feature = "vosk-stt")]
 pub use vosk_stt::{VoskConfidence, VoskTranscriber};
-pub use wake::{WakeAudioWindow, WakeIntentClassifier, WakeIntentDecision, WakeIntentDisposition};
+pub use wake::{
+    WakeAudioWindow, WakeIntentClassifier, WakeIntentDecision, WakeIntentDisposition,
+    WarmTurnClassifier,
+};
 #[cfg(feature = "voice-runtime")]
 pub use wake_runtime::{WakeCommandPipeline, WakePipelineEvent};
 pub use wav::WavSource;

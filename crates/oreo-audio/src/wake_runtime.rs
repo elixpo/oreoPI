@@ -4,6 +4,7 @@ use crate::{
     AudioError, AudioErrorKind, AudioLimits, ConversationDirective, ConversationLanguage,
     EnergyVad, OpenWakeWordDetector, PcmChunk, STT_FORMAT, StreamingTranscriber, VadConfig,
     VadDecision, VoskTranscriber, WakeAudioWindow, WakeIntentClassifier, WakeIntentDisposition,
+    WarmTurnClassifier,
 };
 
 const COOLDOWN_SAMPLES: usize = 8_000;
@@ -54,11 +55,13 @@ pub struct WakeCommandPipeline {
     detector: OpenWakeWordDetector,
     transcriber: VoskTranscriber,
     classifier: WakeIntentClassifier,
+    warm_classifier: WarmTurnClassifier,
     conversation: ConversationLanguage,
     wake_window: WakeAudioWindow,
     state: RuntimeState,
     limits: AudioLimits,
     max_command_samples: usize,
+    conversation_busy: bool,
 }
 
 impl WakeCommandPipeline {
@@ -85,12 +88,20 @@ impl WakeCommandPipeline {
             detector,
             transcriber,
             classifier: WakeIntentClassifier::embedded()?,
+            warm_classifier: WarmTurnClassifier::embedded()?,
             conversation: ConversationLanguage::embedded()?,
             wake_window: WakeAudioWindow::new(3)?,
             state: RuntimeState::Listening,
             limits,
             max_command_samples,
+            conversation_busy: false,
         })
+    }
+
+    /// Holds the warm conversation window open while the agent is thinking or
+    /// speaking. The microphone continues processing possible steering turns.
+    pub fn set_conversation_busy(&mut self, busy: bool) {
+        self.conversation_busy = busy;
     }
 
     /// Warms the acoustic worker before microphone processing begins.
@@ -173,7 +184,7 @@ impl WakeCommandPipeline {
             }
             RuntimeState::Engaged { vad, samples_left } => {
                 self.wake_window.push(chunk, cancellation)?;
-                *samples_left = samples_left.saturating_sub(chunk.samples().len());
+                consume_session_time(samples_left, chunk.samples().len(), self.conversation_busy);
                 if vad.observe(chunk) == VadDecision::SpeechStarted {
                     let session_samples_left = *samples_left;
                     self.begin_engaged_capture(session_samples_left, cancellation)?;
@@ -191,7 +202,7 @@ impl WakeCommandPipeline {
                 session_samples_left,
             } => {
                 *samples = samples.saturating_add(chunk.samples().len());
-                *session_samples_left = session_samples_left.saturating_sub(chunk.samples().len());
+                tick_session(session_samples_left, chunk, self.conversation_busy);
                 self.transcriber.push(chunk, cancellation)?;
                 if vad.observe(chunk) == VadDecision::Endpoint
                     || *samples >= self.max_command_samples
@@ -276,7 +287,7 @@ impl WakeCommandPipeline {
         {
             self.transcriber.begin(STT_FORMAT)?;
             self.state = RuntimeState::Capturing {
-                vad: EnergyVad::new(VadConfig::sbc())?,
+                vad: EnergyVad::new(VadConfig::conversation())?,
                 samples: 0,
                 speech_started: false,
             };
@@ -303,7 +314,7 @@ impl WakeCommandPipeline {
     ) -> Result<(), AudioError> {
         let samples = self.wake_window.snapshot();
         self.transcriber.begin(STT_FORMAT)?;
-        let mut capture_vad = EnergyVad::new(VadConfig::sbc())?;
+        let mut capture_vad = EnergyVad::new(VadConfig::conversation())?;
         let transcription = (|| -> Result<(), AudioError> {
             for samples in samples.chunks(1_600) {
                 let buffered = PcmChunk::new(STT_FORMAT, samples.to_vec())?;
@@ -341,13 +352,20 @@ impl WakeCommandPipeline {
                         self.state = RuntimeState::Listening;
                     } else {
                         self.state = RuntimeState::Engaged {
-                            vad: EnergyVad::new(VadConfig::sbc())?,
+                            vad: EnergyVad::new(VadConfig::conversation())?,
                             samples_left: session_samples_left,
                         };
                     }
                     return Ok((disposition == WakeIntentDisposition::Clarify)
                         .then_some(WakePipelineEvent::ClarificationNeeded));
                 }
+            } else if !self.warm_classifier.accepts(&transcript)? {
+                self.wake_window.clear();
+                self.state = RuntimeState::Engaged {
+                    vad: EnergyVad::new(VadConfig::conversation())?,
+                    samples_left: session_samples_left.max(1),
+                };
+                return Ok(None);
             }
             return self.complete_transcript(transcript, 0.0, cancellation);
         }
@@ -358,7 +376,7 @@ impl WakeCommandPipeline {
             Ok(Some(WakePipelineEvent::ConversationEnded))
         } else {
             self.state = RuntimeState::Engaged {
-                vad: EnergyVad::new(VadConfig::sbc())?,
+                vad: EnergyVad::new(VadConfig::conversation())?,
                 samples_left: session_samples_left,
             };
             Ok(None)
@@ -411,7 +429,7 @@ impl WakeCommandPipeline {
             ConversationDirective::AddressOnly => {
                 self.transcriber.begin(STT_FORMAT)?;
                 self.state = RuntimeState::Capturing {
-                    vad: EnergyVad::new(VadConfig::sbc())?,
+                    vad: EnergyVad::new(VadConfig::conversation())?,
                     samples: 0,
                     speech_started: false,
                 };
@@ -420,13 +438,23 @@ impl WakeCommandPipeline {
             ConversationDirective::Command => {
                 self.wake_window.clear();
                 self.state = RuntimeState::Engaged {
-                    vad: EnergyVad::new(VadConfig::sbc())?,
+                    vad: EnergyVad::new(VadConfig::conversation())?,
                     samples_left: CONVERSATION_WINDOW_SAMPLES,
                 };
                 Ok(Some(WakePipelineEvent::CommandReady { transcript }))
             }
         }
     }
+}
+
+fn consume_session_time(samples_left: &mut usize, samples: usize, held: bool) {
+    if !held {
+        *samples_left = samples_left.saturating_sub(samples);
+    }
+}
+
+fn tick_session(samples_left: &mut usize, chunk: &PcmChunk, held: bool) {
+    consume_session_time(samples_left, chunk.samples().len(), held);
 }
 
 impl Drop for WakeCommandPipeline {

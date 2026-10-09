@@ -1,0 +1,57 @@
+# split	label	transcript
+train	turn	yes
+train	turn	no
+train	turn	okay continue
+train	turn	yes please continue
+train	turn	no stop there
+train	turn	actually make that shorter
+train	turn	wait I meant tomorrow
+train	turn	instead use the first option
+train	turn	also check the next meeting
+train	turn	and what about the weather
+train	turn	what about the next meeting
+train	turn	can you explain that again
+train	turn	please slow down
+train	turn	make it more concise
+train	turn	cancel that request
+train	turn	set it for ten minutes
+train	turn	read the next message
+train	turn	turn the light off
+train	turn	remind me when I leave
+train	turn	tell me more about that
+train	turn	why did that happen
+train	turn	how does that work
+train	turn	which one should I choose
+train	turn	I want the second one
+train	turn	go back to the earlier point
+train	turn	add milk to that list
+train	turn	change the time to five
+train	turn	forget what I just said
+train	background	the television is still playing
+train	background	she said she would arrive later
+train	background	traffic outside is loud today
+train	background	we were discussing the football match
+train	background	the people upstairs are moving furniture
+train	background	music is playing in the other room
+train	background	he told me about his meeting
+train	background	someone is speaking in the hallway
+train	background	the radio presenter mentioned the weather
+train	background	this film has a very long ending
+train	background	my phone was ringing earlier
+train	background	they are having dinner downstairs
+train	background	the dog keeps barking outside
+train	background	the neighbours bought a new car
+train	background	we watched the match yesterday
+train	background	she asked him to close the window
+train	background	he wants to leave before five
+train	background	the train arrives in ten minutes
+train	background	that advertisement was unusually loud
+train	background	the podcast continued after the break
+train	background	people often talk during the programme
+train	background	the kitchen fan is making noise
+train	background	somebody dropped a box outside
+train	background	the news report ended a moment ago
+train	background	we should discuss this with everyone
+train	background	I was telling her about tomorrow
+train	background	the speaker on the television sounds distorted
+train	background	they said the shop closes early

@@ -22,7 +22,8 @@ mod unix {
 
     #[cfg(feature = "voice-agent")]
     use crate::agent_runtime::{
-        AgentRuntimeEvent, VoiceAgentConfig, VoiceAgentIngress, VoiceAgentRuntime,
+        AgentRuntimeEvent, ConversationPhase, VoiceAgentConfig, VoiceAgentIngress,
+        VoiceAgentRuntime,
     };
     #[cfg(feature = "voice-agent")]
     use crate::speech_runtime::SpeechRuntimeEvent;
@@ -356,11 +357,15 @@ mod unix {
         let capture_control = input.control();
         let mut source = ConvertingSource::new(input, STT_FORMAT, limits).map_err(voice_error)?;
         write_log(LogEvent::VoiceListening, LogOutcome::Succeeded);
+        #[cfg(feature = "voice-agent")]
+        let mut last_phase = ConversationPhase::Listening;
 
         while !shared.stopping.load(Ordering::Acquire) {
             let Some(chunk) = source.next_chunk(&cancellation).map_err(voice_error)? else {
                 break;
             };
+            #[cfg(feature = "voice-agent")]
+            update_conversation_phase(config, &mut pipeline, &mut last_phase);
             match pipeline
                 .process(&chunk, &cancellation)
                 .map_err(voice_error)?
@@ -431,6 +436,31 @@ mod unix {
             ));
         }
         Ok(())
+    }
+
+    #[cfg(feature = "voice-agent")]
+    fn update_conversation_phase(
+        config: &VoiceConfig,
+        pipeline: &mut WakeCommandPipeline,
+        last_phase: &mut ConversationPhase,
+    ) {
+        let Some(agent) = &config.agent_ingress else {
+            return;
+        };
+        let phase = agent.phase();
+        pipeline.set_conversation_busy(phase != ConversationPhase::Listening);
+        if phase == *last_phase {
+            return;
+        }
+        write_log(
+            match phase {
+                ConversationPhase::Listening => LogEvent::VoiceListening,
+                ConversationPhase::Thinking => LogEvent::VoiceThinking,
+                ConversationPhase::Speaking => LogEvent::VoiceSpeaking,
+            },
+            LogOutcome::Succeeded,
+        );
+        *last_phase = phase;
     }
 
     fn serve(listener: &UnixListener, shared: &Arc<SharedState>) -> Result<(), DaemonError> {
@@ -855,6 +885,10 @@ mod unix {
         VoiceFault,
         #[cfg(feature = "voice-runtime")]
         VoiceListening,
+        #[cfg(feature = "voice-agent")]
+        VoiceSpeaking,
+        #[cfg(feature = "voice-agent")]
+        VoiceThinking,
     }
 
     impl LogEvent {
@@ -911,6 +945,10 @@ mod unix {
                 Self::VoiceFault => "voice_fault",
                 #[cfg(feature = "voice-runtime")]
                 Self::VoiceListening => "voice_listening",
+                #[cfg(feature = "voice-agent")]
+                Self::VoiceSpeaking => "voice_speaking",
+                #[cfg(feature = "voice-agent")]
+                Self::VoiceThinking => "voice_thinking",
             }
         }
     }

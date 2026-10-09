@@ -136,6 +136,13 @@ pub(crate) enum AgentRuntimeEvent {
     TurnFailed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ConversationPhase {
+    Listening,
+    Thinking,
+    Speaking,
+}
+
 #[derive(Clone)]
 pub(crate) struct VoiceAgentIngress {
     controller: Arc<Mutex<AgentTurnController>>,
@@ -212,6 +219,20 @@ impl VoiceAgentIngress {
 
     pub(crate) fn resembles_output(&self, transcript: &str) -> bool {
         self.speech.resembles_output(transcript)
+    }
+
+    pub(crate) fn phase(&self) -> ConversationPhase {
+        if self.speech.is_speaking() {
+            ConversationPhase::Speaking
+        } else if self
+            .controller
+            .lock()
+            .map_or(true, |controller| controller.is_active())
+        {
+            ConversationPhase::Thinking
+        } else {
+            ConversationPhase::Listening
+        }
     }
 }
 

@@ -83,13 +83,13 @@ The openWakeWord worker is pinned to `.venv-wake`, has networking and inherited
 environment variables removed, accepts only fixed 1,280-sample frames, and
 returns one bounded score. Rust owns the rolling window, thresholds, Vosk,
 follow-up timeout, cancellation, and microphone lifecycle. Candidate audio is
-streamed into Vosk until 300 ms of natural silence; there is no fixed one-second
-post-roll.
+streamed into Vosk until the phase-specific natural-silence endpoint; there is
+no fixed one-second post-roll.
 
 There are three interaction modes:
 
 - Saying only an accepted rendering of `Oreo` emits `wake_accepted` and opens a
-  five-second follow-up window. The follow-up ends after 300 ms of silence.
+  five-second follow-up window. The follow-up ends after 600 ms of silence.
 - An accepted contextual utterance such as “Oreo, set a timer” or “what is the
   weather, Oreo?” is already the command. It emits `voice_command_ready`
   immediately after its endpoint and does not ask for the sentence again.
@@ -99,6 +99,24 @@ There are three interaction modes:
   five-second follow-up capture. Those nicknames never enter the cold acoustic
   detector. An exact phrase from `config/conversation-sleep-phrases.txt`, or
   30 seconds without another command, closes the window.
+
+The engaged window follows three explicit runtime phases:
+
+- `voice_listening`: a cold session requires Oreo; a warm session accepts a
+  locally classified conversational turn without repeating the name.
+- `voice_thinking`: the warm-session idle clock is frozen and the microphone
+  remains open. A genuine correction steers the active turn while carrying the
+  original request into the replacement prompt.
+- `voice_speaking`: the clock remains frozen and the microphone stays open for
+  barge-in. Output-like transcripts are rejected as echo; distinct commands
+  stop speech and continue the conversation.
+
+Warm capture uses a conservative four-frame speech start and a 600 ms silence
+endpoint, instead of the cold detector's two-frame start and 300 ms endpoint.
+A second tiny corpus-trained classifier separates likely commands, questions,
+corrections, and acknowledgements from television, hallway speech, and other
+room conversation before anything enters the agent queue. Its reviewed corpus
+is `config/conversation-intent-corpus.tsv`; it performs no network request.
 
 An engaged VAD event that produces no Vosk text is treated as ambient noise. It
 returns to the remaining conversation window without emitting a command timeout

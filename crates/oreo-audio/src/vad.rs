@@ -17,6 +17,18 @@ impl VadConfig {
         }
     }
 
+    /// More conservative turn-taking profile used after a conversation opens.
+    /// It rejects short background bursts and waits 600 ms before ending a
+    /// user's utterance so natural pauses do not fragment one request.
+    #[must_use]
+    pub const fn conversation() -> Self {
+        Self {
+            speech_threshold: 700,
+            speech_start_frames: 4,
+            silence_end_frames: 30,
+        }
+    }
+
     /// Validates deterministic endpoint bounds.
     ///
     /// # Errors
@@ -160,5 +172,18 @@ mod tests {
         let mut vad = EnergyVad::new(VadConfig::sbc()).expect("VAD starts");
         assert_eq!(vad.observe(&chunk(2_000)), VadDecision::Silence);
         assert_eq!(vad.observe(&chunk(0)), VadDecision::Silence);
+    }
+
+    #[test]
+    fn conversation_profile_rejects_bursts_and_allows_natural_pauses() {
+        let mut vad = EnergyVad::new(VadConfig::conversation()).expect("VAD starts");
+        for _ in 0..3 {
+            assert_eq!(vad.observe(&chunk(2_000)), VadDecision::Silence);
+        }
+        assert_eq!(vad.observe(&chunk(2_000)), VadDecision::SpeechStarted);
+        for _ in 0..29 {
+            assert_eq!(vad.observe(&chunk(0)), VadDecision::Speech);
+        }
+        assert_eq!(vad.observe(&chunk(0)), VadDecision::Endpoint);
     }
 }

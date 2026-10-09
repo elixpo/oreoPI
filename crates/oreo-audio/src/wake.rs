@@ -11,6 +11,7 @@ const IDENTITY_CLARIFICATION_THRESHOLD: f64 = 0.25;
 const EMBEDDED_CORPUS: &str = include_str!("../../../config/wake-intent-corpus.tsv");
 const EMBEDDED_ALIASES: &str = include_str!("../../../config/wake-identity-aliases.txt");
 const EMBEDDED_SPOKEN_IDENTITIES: &str = include_str!("../../../config/wake-spoken-identities.txt");
+const EMBEDDED_WARM_CORPUS: &str = include_str!("../../../config/conversation-intent-corpus.tsv");
 
 /// Bounded rolling PCM retained only while listening for a possible wake intent.
 pub struct WakeAudioWindow {
@@ -107,6 +108,88 @@ pub struct WakeIntentClassifier {
     spoken_identities: HashSet<String>,
     weights: HashMap<String, [u32; 2]>,
     document_totals: [u32; 2],
+}
+
+/// Tiny local model separating a warm-session user turn from incidental room
+/// conversation. It is used only after a valid cold wake has opened a session.
+pub struct WarmTurnClassifier {
+    weights: HashMap<String, [u32; 2]>,
+    document_totals: [u32; 2],
+}
+
+impl WarmTurnClassifier {
+    /// Trains the reviewed embedded warm-turn corpus in memory.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed if the corpus is malformed or too small.
+    pub fn embedded() -> Result<Self, AudioError> {
+        let mut classifier = Self {
+            weights: HashMap::new(),
+            document_totals: [0; 2],
+        };
+        let aliases = HashSet::new();
+        for line in EMBEDDED_WARM_CORPUS.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let fields: Vec<_> = line.splitn(3, '\t').collect();
+            let [split, label, text] = fields.as_slice() else {
+                return Err(classifier_error());
+            };
+            if *split != "train" {
+                continue;
+            }
+            let class = match *label {
+                "background" => 0,
+                "turn" => 1,
+                _ => return Err(classifier_error()),
+            };
+            classifier.document_totals[class] += 1;
+            for feature in features(text, &aliases).into_iter().collect::<HashSet<_>>() {
+                classifier.weights.entry(feature).or_insert([0; 2])[class] += 1;
+            }
+        }
+        if classifier.document_totals.iter().any(|count| *count < 20) {
+            return Err(classifier_error());
+        }
+        Ok(classifier)
+    }
+
+    /// Returns whether a bounded transcript is likely a new conversational
+    /// turn. Unknown or ambiguous speech fails closed as room background.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty or oversized transcripts.
+    pub fn accepts(&self, transcript: &str) -> Result<bool, AudioError> {
+        if transcript.trim().is_empty() || transcript.len() > MAX_WAKE_TEXT_BYTES {
+            return Err(AudioError::new(
+                AudioErrorKind::Capacity,
+                "conversation transcript is empty or too large",
+            ));
+        }
+        let aliases = HashSet::new();
+        let documents = f64::from(self.document_totals[0] + self.document_totals[1]);
+        let mut scores = [0.0_f64; 2];
+        for (class, score) in scores.iter_mut().enumerate() {
+            *score = ((f64::from(self.document_totals[class]) + 1.0) / (documents + 2.0)).ln();
+        }
+        for feature in features(transcript, &aliases)
+            .into_iter()
+            .collect::<HashSet<_>>()
+        {
+            let Some(counts) = self.weights.get(&feature) else {
+                continue;
+            };
+            for (class, score) in scores.iter_mut().enumerate() {
+                *score += ((f64::from(counts[class]) + 1.0)
+                    / (f64::from(self.document_totals[class]) + 2.0))
+                    .ln();
+            }
+        }
+        Ok(scores[1] - scores[0] >= 0.75)
+    }
 }
 
 impl WakeIntentClassifier {
@@ -310,7 +393,7 @@ mod tests {
 
     use crate::{AudioErrorKind, AudioFormat, PcmChunk, STT_FORMAT};
 
-    use super::{WakeAudioWindow, WakeIntentClassifier, WakeIntentDisposition};
+    use super::{WakeAudioWindow, WakeIntentClassifier, WakeIntentDisposition, WarmTurnClassifier};
 
     #[test]
     fn rolling_audio_window_forgets_oldest_samples() {
@@ -481,6 +564,32 @@ mod tests {
                 decision.addressed, expected,
                 "unexpected decision for {:?} (score {})",
                 fields[2], decision.score
+            );
+        }
+    }
+
+    #[test]
+    fn warm_classifier_separates_steering_from_room_conversation() {
+        let classifier = WarmTurnClassifier::embedded().expect("classifier trains");
+        for turn in [
+            "actually make that shorter",
+            "wait I meant tomorrow",
+            "yes please continue",
+            "what about the next meeting",
+        ] {
+            assert!(classifier.accepts(turn).expect("turn classifies"), "{turn}");
+        }
+        for background in [
+            "the television is still playing",
+            "she said she would arrive later",
+            "traffic outside is loud today",
+            "we were discussing the football match",
+        ] {
+            assert!(
+                !classifier
+                    .accepts(background)
+                    .expect("background classifies"),
+                "{background}"
             );
         }
     }
