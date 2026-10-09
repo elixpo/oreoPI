@@ -17,7 +17,10 @@ use crate::{
 pub struct VoskTranscriber {
     // Drop recognizer before model: Vosk recognizers refer to shared model data.
     recognizer: Option<Recognizer>,
+    attention_recognizer: Option<Recognizer>,
     model: Model,
+    attention_name: Option<String>,
+    attention_confidence: f32,
     transcript: String,
     confidence: ConfidenceAccumulator,
     max_transcript_bytes: usize,
@@ -78,6 +81,7 @@ impl fmt::Debug for VoskTranscriber {
         formatter
             .debug_struct("VoskTranscriber")
             .field("active", &self.recognizer.is_some())
+            .field("attention_spotter", &self.attention_name.is_some())
             .field("transcript_bytes", &self.transcript.len())
             .field("confidence_words", &self.confidence.words)
             .field("max_transcript_bytes", &self.max_transcript_bytes)
@@ -103,7 +107,10 @@ impl VoskTranscriber {
         })?;
         Ok(Self {
             recognizer: None,
+            attention_recognizer: None,
             model,
+            attention_name: None,
+            attention_confidence: 0.0,
             transcript: String::with_capacity(limits.max_transcript_bytes),
             confidence: ConfidenceAccumulator::default(),
             max_transcript_bytes: limits.max_transcript_bytes,
@@ -123,6 +130,42 @@ impl VoskTranscriber {
         } else {
             self.confidence.complete()
         }
+    }
+
+    /// Enables a second grammar-biased decoder sharing the already loaded
+    /// model. It only supplies an acoustic attention hint; the contextual gate
+    /// still decides whether the utterance is actually directed at Oreo.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty or multi-word name and changes during an utterance.
+    pub fn configure_attention_spotter(&mut self, name: &str) -> Result<(), AudioError> {
+        if self.recognizer.is_some() {
+            return Err(AudioError::new(
+                AudioErrorKind::InvalidTransition,
+                "attention spotter cannot change during transcription",
+            ));
+        }
+        let normalized = name.trim().to_ascii_lowercase();
+        if normalized.len() < 3
+            || normalized.len() > 24
+            || !normalized
+                .chars()
+                .all(|character| character.is_ascii_alphabetic())
+        {
+            return Err(AudioError::new(
+                AudioErrorKind::InvalidConfig,
+                "attention name must be one short word",
+            ));
+        }
+        self.attention_name = Some(normalized);
+        self.attention_confidence = 0.0;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn attention_detected(&self) -> bool {
+        self.recognizer.is_none() && self.attention_confidence >= 0.72
     }
 
     /// Returns the bounded transcript decoded so far without ending the
@@ -153,6 +196,8 @@ impl VoskTranscriber {
 
     fn reset_utterance(&mut self) {
         self.recognizer = None;
+        self.attention_recognizer = None;
+        self.attention_confidence = 0.0;
         self.transcript.clear();
         self.confidence = ConfidenceAccumulator::default();
     }
@@ -184,6 +229,7 @@ impl StreamingTranscriber for VoskTranscriber {
         }
         self.transcript.clear();
         self.confidence = ConfidenceAccumulator::default();
+        self.attention_confidence = 0.0;
         let mut recognizer = Recognizer::new(&self.model, 16_000.0_f32).ok_or_else(|| {
             AudioError::new(
                 AudioErrorKind::Backend,
@@ -191,7 +237,30 @@ impl StreamingTranscriber for VoskTranscriber {
             )
         })?;
         recognizer.set_words(true);
+        let attention_recognizer = if let Some(name) = &self.attention_name {
+            let grammar = [
+                name.to_owned(),
+                format!("hey {name}"),
+                format!("hello {name}"),
+                format!("{name} [unk]"),
+                format!("[unk] {name}"),
+                format!("[unk] {name} [unk]"),
+                "[unk]".to_owned(),
+            ];
+            let mut attention = Recognizer::new_with_grammar(&self.model, 16_000.0_f32, &grammar)
+                .ok_or_else(|| {
+                AudioError::new(
+                    AudioErrorKind::Backend,
+                    "Vosk attention recognizer could not be created",
+                )
+            })?;
+            attention.set_words(true);
+            Some(attention)
+        } else {
+            None
+        };
         self.recognizer = Some(recognizer);
+        self.attention_recognizer = attention_recognizer;
         Ok(())
     }
 
@@ -210,6 +279,28 @@ impl StreamingTranscriber for VoskTranscriber {
                 AudioErrorKind::UnsupportedFormat,
                 "Vosk requires 16 kHz mono PCM",
             ));
+        }
+
+        if let (Some(attention), Some(name)) =
+            (&mut self.attention_recognizer, &self.attention_name)
+        {
+            let result = attention.accept_waveform(chunk.samples()).map_err(|_| {
+                AudioError::new(
+                    AudioErrorKind::Backend,
+                    "Vosk attention transcription failed",
+                )
+            })?;
+            if result == DecodingState::Finalized {
+                self.attention_confidence = self
+                    .attention_confidence
+                    .max(attention_word_confidence(attention.result(), name));
+            } else if result == DecodingState::Failed {
+                self.reset_utterance();
+                return Err(AudioError::new(
+                    AudioErrorKind::Backend,
+                    "Vosk attention transcription failed",
+                ));
+            }
         }
 
         let segment = (|| -> Result<Option<DecodedSegment>, AudioError> {
@@ -266,6 +357,13 @@ impl StreamingTranscriber for VoskTranscriber {
                 "Vosk transcription is not active",
             )
         })?;
+        if let (Some(mut attention), Some(name)) =
+            (self.attention_recognizer.take(), &self.attention_name)
+        {
+            self.attention_confidence = self
+                .attention_confidence
+                .max(attention_word_confidence(attention.final_result(), name));
+        }
         let final_segment = match decode_segment(recognizer.final_result()) {
             Ok(segment) => segment,
             Err(error) => {
@@ -284,6 +382,17 @@ impl StreamingTranscriber for VoskTranscriber {
         }
         Ok(std::mem::take(&mut self.transcript))
     }
+}
+
+fn attention_word_confidence(result: CompleteResult<'_>, name: &str) -> f32 {
+    result.single().map_or(0.0, |result| {
+        result
+            .result
+            .iter()
+            .filter(|word| word.word.eq_ignore_ascii_case(name))
+            .map(|word| word.conf)
+            .fold(0.0_f32, f32::max)
+    })
 }
 
 fn decode_segment(result: CompleteResult<'_>) -> Result<DecodedSegment, AudioError> {

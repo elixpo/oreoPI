@@ -81,9 +81,11 @@ CPAL -> bounded 16 kHz conversion -> continuously reused Vosk recognizer
 
 The daemon continuously segments locally decoded speech at a conservative
 600 ms natural-silence endpoint. Vosk is loaded once and reused; each utterance
-is capped at 30 seconds. A tiny local contextual model decides whether a phrase
-is directed at the assistant before any transcript can enter the Pollinations
-agent queue. Raw PCM is never persisted.
+is capped at 30 seconds. A grammar-biased attention decoder shares that same
+loaded model and can recover a high-confidence attention-name hit omitted by
+the general transcript. A tiny local contextual model still decides whether
+the complete phrase is directed at the assistant before any transcript can
+enter the Pollinations agent queue. Raw PCM is never persisted.
 
 `Orion` (`oh-RYE-un`) is the default acoustic attention name for the Oreo
 persona because its syllables are substantially clearer to the small English

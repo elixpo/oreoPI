@@ -16,6 +16,7 @@ const MIN_TRANSCRIPT_CONFIDENCE: f32 = 0.35;
 pub struct AmbientVoicePipeline {
     transcriber: VoskTranscriber,
     attention: AmbientAttentionGate,
+    attention_name: String,
     vad: EnergyVad,
     limits: AudioLimits,
     samples: usize,
@@ -25,6 +26,7 @@ pub struct AmbientVoicePipeline {
     last_live_transcript: String,
     latest_partial: String,
     latest_final: Option<String>,
+    latest_attention_match: bool,
     barge_in_confirmed: bool,
 }
 
@@ -48,10 +50,12 @@ impl AmbientVoicePipeline {
                     "ambient capture limit is invalid",
                 )
             })?;
+        transcriber.configure_attention_spotter(attention_name)?;
         transcriber.begin(STT_FORMAT)?;
         Ok(Self {
             transcriber,
             attention: AmbientAttentionGate::new(attention_name)?,
+            attention_name: attention_name.to_ascii_lowercase(),
             vad: EnergyVad::new(VadConfig::conversation())?,
             limits,
             samples: 0,
@@ -61,6 +65,7 @@ impl AmbientVoicePipeline {
             last_live_transcript: String::new(),
             latest_partial: String::new(),
             latest_final: None,
+            latest_attention_match: false,
             barge_in_confirmed: false,
         })
     }
@@ -91,6 +96,10 @@ impl AmbientVoicePipeline {
 
     pub fn take_final_transcript(&mut self) -> Option<String> {
         self.latest_final.take()
+    }
+
+    pub fn take_attention_match(&mut self) -> bool {
+        std::mem::take(&mut self.latest_attention_match)
     }
 
     /// Processes one microphone chunk. All inference before `CommandReady` is
@@ -159,6 +168,7 @@ impl AmbientVoicePipeline {
         self.transcriber.abort();
         self.latest_partial.clear();
         self.latest_final = None;
+        self.latest_attention_match = false;
     }
 
     fn finish_utterance(
@@ -167,6 +177,8 @@ impl AmbientVoicePipeline {
     ) -> Result<Option<WakePipelineEvent>, AudioError> {
         let transcript = self.transcriber.finish(cancellation)?;
         let confidence = self.transcriber.confidence();
+        let attention_detected = self.transcriber.attention_detected();
+        self.latest_attention_match = attention_detected;
         self.transcriber.begin(STT_FORMAT)?;
         self.vad = EnergyVad::new(VadConfig::conversation())?;
         self.samples = 0;
@@ -174,7 +186,7 @@ impl AmbientVoicePipeline {
         self.latest_partial.clear();
         self.latest_final = (!transcript.trim().is_empty()).then(|| transcript.clone());
 
-        if transcript.trim().is_empty()
+        if (transcript.trim().is_empty() && !attention_detected)
             || transcript.len() > self.limits.max_transcript_bytes
             || confidence
                 .is_some_and(|value| value.words != 0 && value.mean < MIN_TRANSCRIPT_CONFIDENCE)
@@ -183,11 +195,21 @@ impl AmbientVoicePipeline {
             return Ok(None);
         }
 
+        let contextual_transcript =
+            if attention_detected && !contains_word(&transcript, &self.attention_name) {
+                if transcript.trim().is_empty() {
+                    self.attention_name.clone()
+                } else {
+                    format!("{transcript} {}", self.attention_name)
+                }
+            } else {
+                transcript.clone()
+            };
         let decision = if self.barge_in_confirmed {
             self.barge_in_confirmed = false;
             AmbientAttentionDecision::Command
         } else {
-            self.attention.assess(&transcript)?
+            self.attention.assess(&contextual_transcript)?
         };
         match decision {
             AmbientAttentionDecision::Ignore => Ok(None),
@@ -216,6 +238,12 @@ fn formed_partial(transcript: &str) -> bool {
         == 2
 }
 
+fn contains_word(transcript: &str, expected: &str) -> bool {
+    transcript
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case(expected))
+}
+
 impl Drop for AmbientVoicePipeline {
     fn drop(&mut self) {
         self.shutdown();
@@ -224,11 +252,17 @@ impl Drop for AmbientVoicePipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::formed_partial;
+    use super::{contains_word, formed_partial};
 
     #[test]
     fn interruption_requires_a_formed_partial() {
         assert!(!formed_partial("wait"));
         assert!(formed_partial("wait listen"));
+    }
+
+    #[test]
+    fn attention_word_matching_does_not_accept_substrings() {
+        assert!(contains_word("hello Orion", "orion"));
+        assert!(!contains_word("orionis is unrelated", "orion"));
     }
 }

@@ -387,6 +387,9 @@ mod unix {
             {
                 write_debug_event("final_transcript", Some(&final_text));
             }
+            if pipeline.take_attention_match() && config.debug_transcripts {
+                write_debug_event("acoustic_attention_match", None);
+            }
             match event {
                 Some(WakePipelineEvent::WakeAccepted { .. }) => {
                     write_log(LogEvent::WakeAccepted, LogOutcome::Succeeded);
