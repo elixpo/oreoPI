@@ -15,7 +15,8 @@ speech. Local fixture WAVs and benchmark reports must not be committed.
 Python packages are benchmark-only adapters. They do not enter the Oreo daemon
 or production container. The selected production engine will remain behind the
 Rust `StreamingTranscriber` contract and must pass cancellation and soak tests
-before issue WP-004 can close.
+before issue WP-004 can close. Moonshine is isolated in `.venv-stt` while it is
+evaluated so its native runtime cannot disturb the working Vosk environment.
 
 ## Operator workflow
 
@@ -53,6 +54,42 @@ Use the same recordings, repetition count, and thread count for both reports.
 The default is five measured runs and one inference thread, matching the first
 SBC-oriented comparison. Output variation is recorded as hypothesis variants
 and a mean WER across runs; it is a benchmark result rather than a fatal error.
+
+## Moonshine Small Streaming comparison
+
+Moonshine Small Streaming is the accuracy-first replacement candidate for the
+ambient conversation path. It has 123 million parameters and architecture ID
+4. The runtime, model revision, cache root, component list, and aggregate file
+digest are pinned; the downloader never writes to the user's global cache.
+
+Create its isolated environment, install the pinned runtime, then fetch the
+model. The fetch is the long step:
+
+```bash
+rtk python3 -m venv .venv-stt
+rtk .venv-stt/bin/python -m pip install --upgrade pip
+rtk .venv-stt/bin/python -m pip install -r requirements/moonshine-stt.txt
+rtk ./scripts/fetch-stt-models.sh moonshine
+```
+
+Run it against the exact same local fixtures used for Vosk. Whole-utterance
+mode is intentional for this first accuracy comparison; streaming endpoint and
+partial-transcript behavior are separate promotion gates. Moonshine manages
+its own ONNX Runtime threading, so `--threads` is recorded but not imposed on
+this engine; its report marks that distinction explicitly.
+
+```bash
+rtk .venv-stt/bin/python scripts/benchmark-stt.py self-test
+rtk .venv-stt/bin/python scripts/benchmark-stt.py run \
+  --engine moonshine \
+  --manifest tests/audio/fixtures.local.json \
+  --output target/audio-bench/moonshine-small-streaming.json
+```
+
+Promotion requires lower WER than the Vosk result on both command and natural
+speech fixtures, warm real-time factor below 1.0, bounded RSS, deterministic
+final text, and successful live interruption. A passing file benchmark does
+not yet change the daemon default.
 
 ## Rust adapter smoke test
 

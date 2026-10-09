@@ -116,6 +116,53 @@ fetch_vosk() {
   echo "$model_id cached at $destination"
 }
 
+fetch_moonshine() {
+  local model_id="moonshine-small-streaming-en-quantized-2026-08-21"
+  local moonshine_cache="$cache_dir/moonshine-voice"
+  local destination="$moonshine_cache/download.moonshine.ai/model/small-streaming-en/quantized_26_08_21"
+  local cli="${MOONSHINE_VOICE_CLI:-$repo_root/.venv-stt/bin/moonshine-voice}"
+  local digest_file="$cache_dir/$model_id.files.sha256.local"
+  local required=(
+    adapter.ort
+    cross_kv.ort
+    decoder_kv.ort
+    encoder.ort
+    frontend.model.ort
+    frontend.weights.ort
+    streaming_config.json
+    tokenizer.bin
+  )
+
+  if [[ ! -x "$cli" ]]; then
+    echo "error: moonshine-voice 0.1.5 is required at $cli" >&2
+    echo "install requirements/moonshine-stt.txt into .venv-stt first" >&2
+    return 1
+  fi
+
+  if [[ ! -d "$destination" ]]; then
+    MOONSHINE_VOICE_CACHE="$moonshine_cache" \
+      "$cli" download --stt --language en --model-arch 4
+  fi
+
+  local artifact
+  for artifact in "${required[@]}"; do
+    if [[ ! -f "$destination/$artifact" ]]; then
+      echo "error: Moonshine cache is missing $artifact" >&2
+      return 1
+    fi
+  done
+
+  (
+    cd -- "$destination"
+    sha256sum "${required[@]}"
+  ) > "$digest_file"
+  local tree_digest
+  tree_digest="$(sha256sum "$digest_file")"
+  printf '%s  %s.files\n' "${tree_digest%% *}" "$model_id" \
+    > "$cache_dir/$model_id.sha256.local"
+  echo "$model_id cached at $destination"
+}
+
 case "${1:-}" in
   sherpa)
     fetch_sherpa
@@ -123,12 +170,16 @@ case "${1:-}" in
   vosk)
     fetch_vosk
     ;;
+  moonshine)
+    fetch_moonshine
+    ;;
   all)
     fetch_sherpa
     fetch_vosk
+    fetch_moonshine
     ;;
   *)
-    echo "usage: $0 <sherpa|vosk|all>" >&2
+    echo "usage: $0 <sherpa|vosk|moonshine|all>" >&2
     exit 2
     ;;
 esac

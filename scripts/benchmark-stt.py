@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import array
 import argparse
 import hashlib
 import importlib.metadata
@@ -129,6 +130,41 @@ class VoskEngine:
         return " ".join(parts)
 
 
+class MoonshineEngine:
+    name = "moonshine-voice"
+
+    def __init__(self, model: Path, _threads: int) -> None:
+        try:
+            from moonshine_voice import ModelArch, Transcriber
+        except ImportError as error:
+            raise RuntimeError(
+                "Moonshine benchmark requires moonshine-voice==0.1.5"
+            ) from error
+
+        installed = importlib.metadata.version("moonshine-voice")
+        if installed != "0.1.5":
+            raise RuntimeError(
+                f"expected moonshine-voice==0.1.5, found {installed}"
+            )
+        self._transcriber = Transcriber(
+            model_path=str(model), model_arch=ModelArch.SMALL_STREAMING
+        )
+        self.package_version = installed
+
+    def transcribe(self, fixture: Fixture) -> str:
+        pcm = array.array("h")
+        pcm.frombytes(fixture.pcm)
+        if sys.byteorder != "little":
+            pcm.byteswap()
+        samples = [sample / 32768.0 for sample in pcm]
+        transcript = self._transcriber.transcribe_without_streaming(
+            samples, sample_rate=SAMPLE_RATE
+        )
+        return " ".join(
+            line.text.strip() for line in transcript.lines if line.text.strip()
+        )
+
+
 def parse_arguments() -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__)
@@ -136,7 +172,9 @@ def parse_arguments() -> argparse.Namespace:
     subcommands.add_parser("self-test", help="run dependency-free scoring tests")
 
     run = subcommands.add_parser("run", help="benchmark one cached engine")
-    run.add_argument("--engine", choices=("sherpa", "vosk"), required=True)
+    run.add_argument(
+        "--engine", choices=("sherpa", "vosk", "moonshine"), required=True
+    )
     run.add_argument("--manifest", type=Path, required=True)
     run.add_argument("--model", type=Path)
     run.add_argument("--repetitions", type=int, default=5)
@@ -265,6 +303,9 @@ def acquired_digest(repo_root: Path, engine: str) -> str:
     name = {
         "sherpa": "sherpa-zipformer-en-20m-int8-2023-02-17.sha256.local",
         "vosk": "vosk-small-en-us-0.15.sha256.local",
+        "moonshine": (
+            "moonshine-small-streaming-en-quantized-2026-08-21.sha256.local"
+        ),
     }[engine]
     parts = (repo_root / "models" / "cache" / name).read_text(
         encoding="utf-8"
@@ -277,7 +318,9 @@ def acquired_digest(repo_root: Path, engine: str) -> str:
 def create_engine(engine: str, model: Path, threads: int) -> Engine:
     if engine == "sherpa":
         return SherpaEngine(model, threads)
-    return VoskEngine(model, threads)
+    if engine == "vosk":
+        return VoskEngine(model, threads)
+    return MoonshineEngine(model, threads)
 
 
 def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
@@ -290,6 +333,11 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         "sherpa": arguments.repo_root
         / "models/cache/sherpa-zipformer-en-20m-int8-2023-02-17",
         "vosk": arguments.repo_root / "models/cache/vosk-model-small-en-us-0.15",
+        "moonshine": arguments.repo_root
+        / (
+            "models/cache/moonshine-voice/download.moonshine.ai/model/"
+            "small-streaming-en/quantized_26_08_21"
+        ),
     }
     model = (arguments.model or defaults[arguments.engine]).resolve()
     if not model.is_dir():
@@ -377,6 +425,7 @@ def run_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
             "python": platform.python_version(),
             "cpu_count": os.cpu_count(),
             "threads": arguments.threads,
+            "threads_controlled_by_harness": arguments.engine != "moonshine",
         },
         "load_ms": load_ms,
         "warmup_ms": warmup_ms,

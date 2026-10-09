@@ -49,3 +49,12 @@ Wake-word recognition is intentionally not part of the Vosk adapter. The first
 implementation remains push-to-talk and exposes Vosk only through Oreo's
 bounded `StreamingTranscriber` contract; a future wake-word layer can trigger
 capture without changing STT engine ownership.
+
+## 2026-10-09 reassessment
+
+The ambient conversation tests exposed material Vosk substitutions and false
+words at close range, so the project is evaluating Moonshine Voice 0.1.5 Small
+Streaming as the new accuracy-first primary. Vosk remains the deployed laptop
+engine until the identical-fixture benchmark and the live streaming gates pass.
+This preserves a working fallback and avoids converting an upstream published
+WER into an Oreo-specific selection without local evidence.
