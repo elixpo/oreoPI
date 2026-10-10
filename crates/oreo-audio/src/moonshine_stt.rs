@@ -213,10 +213,10 @@ impl MoonshineTranscriber {
                         "Moonshine transcript is too large",
                     ));
                 }
-                self.attention_detected |= self.attention_name.as_deref().is_some_and(|name| {
-                    text.split(|character: char| !character.is_ascii_alphanumeric())
-                        .any(|word| word.eq_ignore_ascii_case(name))
-                });
+                self.attention_detected |= self
+                    .attention_name
+                    .as_deref()
+                    .is_some_and(|name| contains_attention_name(&text, name));
                 self.live_transcript = text;
                 Ok(())
             }
@@ -258,6 +258,49 @@ impl MoonshineTranscriber {
         self.attention_detected = false;
         self.live_transcript.clear();
     }
+}
+
+fn contains_attention_name(text: &str, name: &str) -> bool {
+    text.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .any(|word| {
+            word.eq_ignore_ascii_case(name)
+                || (name.len() >= 5
+                    && word.len().abs_diff(name.len()) <= 1
+                    && consonant_skeleton(word).eq(consonant_skeleton(name))
+                    && edit_distance_with_limit(&word.to_ascii_lowercase(), name, 3).is_some())
+        })
+}
+
+fn consonant_skeleton(word: &str) -> impl Iterator<Item = u8> + '_ {
+    word.bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .filter(|byte| byte.is_ascii_alphabetic() && !b"aeiouy".contains(byte))
+}
+
+fn edit_distance_with_limit(left: &str, right: &str, limit: usize) -> Option<usize> {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len().abs_diff(right.len()) > limit {
+        return None;
+    }
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_byte) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        let mut row_minimum = current[0];
+        for (right_index, right_byte) in right.iter().enumerate() {
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + usize::from(left_byte != right_byte));
+            row_minimum = row_minimum.min(current[right_index + 1]);
+        }
+        if row_minimum > limit {
+            return None;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    (previous[right.len()] <= limit).then_some(previous[right.len()])
 }
 
 impl StreamingTranscriber for MoonshineTranscriber {
@@ -407,7 +450,7 @@ impl AmbientTranscriber for MoonshineTranscriber {
             ));
         }
         self.attention_name = Some(normalized);
-        Ok(())
+        self.start_worker()
     }
 
     fn live_transcript(&mut self) -> Result<String, AudioError> {
@@ -515,7 +558,15 @@ mod tests {
 
     use crate::{AmbientTranscriber, AudioLimits, PcmChunk, STT_FORMAT, StreamingTranscriber};
 
-    use super::{MoonshineSttConfig, MoonshineTranscriber};
+    use super::{MoonshineSttConfig, MoonshineTranscriber, contains_attention_name};
+
+    #[test]
+    fn attention_matching_accepts_close_model_rendering_but_not_common_collision() {
+        assert!(contains_attention_name("Hey, Orion", "orion"));
+        assert!(contains_attention_name("Hey Aureon explain this", "orion"));
+        assert!(!contains_attention_name("play the audio", "orion"));
+        assert!(!contains_attention_name("that was an ordeal", "orion"));
+    }
 
     #[test]
     fn fake_worker_is_reused_across_streaming_utterances() {

@@ -1,4 +1,5 @@
 use oreo_core::CancellationToken;
+use std::collections::VecDeque;
 
 use crate::{
     AmbientAttentionDecision, AmbientAttentionGate, AmbientTranscriber, AudioError, AudioErrorKind,
@@ -8,6 +9,13 @@ use crate::{
 
 const CONVERSATION_WINDOW_SAMPLES: usize = 30 * 16_000;
 const MIN_TRANSCRIPT_CONFIDENCE: f32 = 0.35;
+const PRE_ROLL_CHUNKS: usize = 10;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum UtteranceState {
+    Dormant,
+    Active,
+}
 
 /// Continuous, fully local speech segmentation and contextual attention gate.
 ///
@@ -21,6 +29,8 @@ pub struct AmbientVoicePipeline {
     limits: AudioLimits,
     samples: usize,
     max_samples: usize,
+    pre_roll: VecDeque<PcmChunk>,
+    utterance_state: UtteranceState,
     session_samples_left: usize,
     conversation_phase: ConversationAudioPhase,
     last_live_transcript: String,
@@ -53,7 +63,6 @@ impl AmbientVoicePipeline {
             })?;
         let mut transcriber: Box<dyn AmbientTranscriber> = Box::new(transcriber);
         transcriber.configure_attention_spotter(attention_name)?;
-        transcriber.begin(STT_FORMAT)?;
         Ok(Self {
             transcriber,
             attention: AmbientAttentionGate::new(attention_name)?,
@@ -62,6 +71,8 @@ impl AmbientVoicePipeline {
             limits,
             samples: 0,
             max_samples,
+            pre_roll: VecDeque::with_capacity(PRE_ROLL_CHUNKS),
+            utterance_state: UtteranceState::Dormant,
             session_samples_left: 0,
             conversation_phase: ConversationAudioPhase::Listening,
             last_live_transcript: String::new(),
@@ -111,11 +122,12 @@ impl AmbientVoicePipeline {
     }
 
     /// Processes one microphone chunk. All inference before `CommandReady` is
-    /// local and raw PCM remains bounded to the current Vosk utterance.
+    /// local and raw PCM remains bounded to a short pre-roll and the current
+    /// utterance. The larger STT backend remains idle until VAD confirms speech.
     ///
     /// # Errors
     ///
-    /// Fails closed on format, cancellation, Vosk, or classifier errors.
+    /// Fails closed on format, cancellation, STT, or classifier errors.
     pub fn process(
         &mut self,
         chunk: &PcmChunk,
@@ -135,7 +147,6 @@ impl AmbientVoicePipeline {
             ));
         }
 
-        self.samples = self.samples.saturating_add(chunk.samples().len());
         if self.attention.is_attentive()
             && self.conversation_phase == ConversationAudioPhase::Listening
         {
@@ -143,8 +154,35 @@ impl AmbientVoicePipeline {
                 .session_samples_left
                 .saturating_sub(chunk.samples().len());
         }
-        self.transcriber.push(chunk, cancellation)?;
         let vad = self.vad.observe(chunk);
+
+        if self.utterance_state == UtteranceState::Active {
+            self.samples = self.samples.saturating_add(chunk.samples().len());
+            self.transcriber.push(chunk, cancellation)?;
+        } else {
+            self.pre_roll.push_back(chunk.clone());
+            if self.pre_roll.len() > PRE_ROLL_CHUNKS {
+                self.pre_roll.pop_front();
+            }
+            if vad != VadDecision::SpeechStarted {
+                if vad == VadDecision::Silence
+                    && self.attention.is_attentive()
+                    && self.session_samples_left == 0
+                {
+                    self.attention.sleep();
+                    return Ok(Some(WakePipelineEvent::ConversationEnded));
+                }
+                return Ok(None);
+            }
+
+            self.transcriber.begin(STT_FORMAT)?;
+            self.utterance_state = UtteranceState::Active;
+            while let Some(buffered) = self.pre_roll.pop_front() {
+                self.samples = self.samples.saturating_add(buffered.samples().len());
+                self.transcriber.push(&buffered, cancellation)?;
+            }
+        }
+
         let live = self.transcriber.live_transcript()?;
         live.clone_into(&mut self.latest_partial);
 
@@ -162,18 +200,14 @@ impl AmbientVoicePipeline {
         if vad == VadDecision::Endpoint || self.samples >= self.max_samples {
             return self.finish_utterance(cancellation);
         }
-        if vad == VadDecision::Silence
-            && self.attention.is_attentive()
-            && self.session_samples_left == 0
-        {
-            self.attention.sleep();
-            return Ok(Some(WakePipelineEvent::ConversationEnded));
-        }
         Ok(None)
     }
 
     pub fn shutdown(&mut self) {
         self.transcriber.abort();
+        self.utterance_state = UtteranceState::Dormant;
+        self.pre_roll.clear();
+        self.samples = 0;
         self.latest_partial.clear();
         self.latest_final = None;
         self.latest_final_accepted = false;
@@ -188,7 +222,8 @@ impl AmbientVoicePipeline {
         let confidence = self.transcriber.confidence();
         let attention_detected = self.transcriber.attention_detected();
         self.latest_attention_match = attention_detected;
-        self.transcriber.begin(STT_FORMAT)?;
+        self.utterance_state = UtteranceState::Dormant;
+        self.pre_roll.clear();
         self.vad = EnergyVad::new(VadConfig::conversation())?;
         self.samples = 0;
         self.last_live_transcript.clear();
@@ -265,7 +300,68 @@ impl Drop for AmbientVoicePipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_word, formed_partial};
+    use std::sync::{Arc, Mutex};
+
+    use oreo_core::CancellationToken;
+
+    use crate::{
+        AmbientTranscriber, AudioError, AudioFormat, AudioLimits, PcmChunk, STT_FORMAT,
+        StreamingTranscriber, TranscriptionConfidence,
+    };
+
+    use super::{AmbientVoicePipeline, contains_word, formed_partial};
+
+    #[derive(Default)]
+    struct TranscriberStats {
+        begins: usize,
+        pushes: usize,
+    }
+
+    struct FakeTranscriber {
+        stats: Arc<Mutex<TranscriberStats>>,
+    }
+
+    impl StreamingTranscriber for FakeTranscriber {
+        fn begin(&mut self, _format: AudioFormat) -> Result<(), AudioError> {
+            self.stats.lock().expect("stats").begins += 1;
+            Ok(())
+        }
+
+        fn push(
+            &mut self,
+            _chunk: &PcmChunk,
+            _cancellation: &CancellationToken,
+        ) -> Result<(), AudioError> {
+            self.stats.lock().expect("stats").pushes += 1;
+            Ok(())
+        }
+
+        fn finish(&mut self, _cancellation: &CancellationToken) -> Result<String, AudioError> {
+            Ok(String::new())
+        }
+    }
+
+    impl AmbientTranscriber for FakeTranscriber {
+        fn configure_attention_spotter(&mut self, _name: &str) -> Result<(), AudioError> {
+            Ok(())
+        }
+
+        fn live_transcript(&mut self) -> Result<String, AudioError> {
+            Ok(String::new())
+        }
+
+        fn confidence(&self) -> Option<TranscriptionConfidence> {
+            None
+        }
+
+        fn attention_detected(&self) -> bool {
+            false
+        }
+    }
+
+    fn chunk(amplitude: i16) -> PcmChunk {
+        PcmChunk::new(STT_FORMAT, vec![amplitude; 320]).expect("PCM chunk")
+    }
 
     #[test]
     fn interruption_requires_a_formed_partial() {
@@ -277,5 +373,42 @@ mod tests {
     fn attention_word_matching_does_not_accept_substrings() {
         assert!(contains_word("hello Orion", "orion"));
         assert!(!contains_word("orionis is unrelated", "orion"));
+    }
+
+    #[test]
+    fn dormant_pipeline_does_not_run_stt_until_speech_is_confirmed() {
+        let stats = Arc::new(Mutex::new(TranscriberStats::default()));
+        let mut pipeline = AmbientVoicePipeline::new(
+            FakeTranscriber {
+                stats: Arc::clone(&stats),
+            },
+            AudioLimits::sbc(),
+            "orion",
+        )
+        .expect("pipeline");
+        let cancellation = CancellationToken::new();
+
+        for _ in 0..20 {
+            pipeline
+                .process(&chunk(0), &cancellation)
+                .expect("silent frame");
+        }
+        for _ in 0..3 {
+            pipeline
+                .process(&chunk(1_000), &cancellation)
+                .expect("unconfirmed voice frame");
+        }
+        {
+            let stats = stats.lock().expect("stats");
+            assert_eq!(stats.begins, 0);
+            assert_eq!(stats.pushes, 0);
+        }
+
+        pipeline
+            .process(&chunk(1_000), &cancellation)
+            .expect("confirmed voice frame");
+        let stats = stats.lock().expect("stats");
+        assert_eq!(stats.begins, 1);
+        assert_eq!(stats.pushes, 10);
     }
 }
