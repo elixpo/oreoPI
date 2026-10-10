@@ -82,11 +82,13 @@ CPAL -> bounded 16 kHz conversion -> persistent Moonshine streaming worker
 The daemon continuously segments locally decoded speech at a conservative
 600 ms natural-silence endpoint. Moonshine Small Streaming is loaded once in
 an isolated local worker and reused; each utterance is capped at 30 seconds.
-Its configurable key-term bias improves the selected attention name without
-restricting recognition to a command grammar. A tiny local contextual model
-still decides whether the complete phrase is directed at the assistant before
-any transcript can enter the Pollinations agent queue. Raw PCM is never
-persisted.
+Its configurable key-term and short-context bias improve the selected attention
+name without restricting recognition to a command grammar. Moonshine's own VAD
+is disabled because Oreo's bounded conversation VAD owns the utterance boundary;
+this keeps live final decoding aligned with the accepted whole-utterance
+benchmark. A tiny local contextual model still decides whether the complete
+phrase is directed at the assistant before any transcript can enter the
+Pollinations agent queue. Raw PCM is never persisted.
 
 `Orion` (`oh-RYE-un`) is the default acoustic attention name for the Oreo
 persona because its syllables are substantially clearer to the small English

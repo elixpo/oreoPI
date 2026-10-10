@@ -91,7 +91,14 @@ def run() -> int:
         update_interval=config.update_interval,
         options={
             "keyterms": attention_name,
-            "keyterm_boost": "1.5",
+            "keyterm_boost": "3.0",
+            "context": f"The local voice assistant is named {attention_name}.",
+            "context_max_terms": "8",
+            # Oreo owns utterance segmentation. Running Moonshine's VAD on the
+            # already segmented stream changed boundaries and reduced accuracy
+            # compared with the accepted whole-utterance benchmark.
+            "vad_threshold": "0",
+            "vad_max_segment_duration": "30",
             "return_audio_data": "false",
         },
     )
