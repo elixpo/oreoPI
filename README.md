@@ -19,13 +19,13 @@ offline speech-input path:
 ```text
 CLI input -> local Unix socket -> daemon -> bounded SQLite state
          \-> local router or Oreo agent -> response plan -> output sink
-microphone -> bounded PCM conversion -> Vosk -> Oreo agent -> streaming Pocket TTS
-microphone -> continuous bounded Vosk -> local contextual attention gate -> agent
+microphone -> bounded PCM conversion -> local acoustic wake gate
+           -> Moonshine STT -> contextual attention gate -> Oreo agent
 ```
 
 The developer voice command retains explicit Enter-to-start/Enter-to-stop
 capture. The daemon also has an opt-in, always-on laptop voice runtime. It uses
-`Orion` as the default microphone-facing attention name for the Oreo persona,
+the trained `Oreo` acoustic attention model before invoking the larger STT,
 keeps all attention decisions local, and never logs transcripts by default.
 Its optional `voice-agent` feature connects contextual commands to one
 persistent, cancellable Pollinations harness on an independent thread. Its

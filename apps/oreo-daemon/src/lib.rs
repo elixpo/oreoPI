@@ -33,7 +33,8 @@ mod unix {
     #[cfg(feature = "voice-runtime")]
     use oreo_audio::{
         AmbientVoicePipeline, AudioLimits, AudioSource, ConvertingSource, CpalInputSource,
-        MoonshineSttConfig, MoonshineTranscriber, STT_FORMAT, WakePipelineEvent,
+        MoonshineSttConfig, MoonshineTranscriber, OpenWakeWordConfig, OpenWakeWordDetector,
+        STT_FORMAT, WakePipelineEvent,
     };
     #[cfg(feature = "voice-runtime")]
     use oreo_core::CancellationToken;
@@ -67,7 +68,7 @@ mod unix {
         pub fn for_repository(root: impl AsRef<Path>) -> Self {
             Self {
                 repository_root: root.as_ref().to_path_buf(),
-                attention_name: "orion".to_owned(),
+                attention_name: "oreo".to_owned(),
                 debug_transcripts: false,
                 #[cfg(feature = "voice-agent")]
                 agent_config: None,
@@ -346,13 +347,18 @@ mod unix {
     fn voice_session(shared: &Arc<SharedState>, config: &VoiceConfig) -> Result<(), DaemonError> {
         let limits = AudioLimits::sbc();
         let cancellation = CancellationToken::new();
+        let mut detector =
+            OpenWakeWordDetector::new(OpenWakeWordConfig::for_repository(&config.repository_root))
+                .map_err(voice_error)?;
+        detector.prewarm(&cancellation).map_err(voice_error)?;
         let transcriber = MoonshineTranscriber::load(
             MoonshineSttConfig::for_repository(&config.repository_root),
             limits,
         )
         .map_err(voice_error)?;
-        let mut pipeline = AmbientVoicePipeline::new(transcriber, limits, &config.attention_name)
-            .map_err(voice_error)?;
+        let mut pipeline =
+            AmbientVoicePipeline::new(transcriber, detector, limits, &config.attention_name)
+                .map_err(voice_error)?;
         let input = CpalInputSource::open_default(limits).map_err(voice_error)?;
         let capture_control = input.control();
         let mut source = ConvertingSource::new(input, STT_FORMAT, limits).map_err(voice_error)?;
@@ -1283,20 +1289,16 @@ mod unix {
     #[cfg(feature = "voice-runtime")]
     fn attention_name() -> Result<String, DaemonError> {
         let value = match env::var("OREO_ATTENTION_NAME") {
-            Err(env::VarError::NotPresent) => return Ok("orion".to_owned()),
+            Err(env::VarError::NotPresent) => return Ok("oreo".to_owned()),
             Ok(value) => value.trim().to_ascii_lowercase(),
             Err(env::VarError::NotUnicode(_)) => String::new(),
         };
-        if (3..=24).contains(&value.len())
-            && value
-                .chars()
-                .all(|character| character.is_ascii_alphabetic())
-        {
+        if value == "oreo" {
             Ok(value)
         } else {
             Err(DaemonError::new(
                 DaemonErrorKind::Voice,
-                "OREO_ATTENTION_NAME must be one ASCII word between 3 and 24 letters",
+                "OREO_ATTENTION_NAME must match the installed Oreo acoustic model",
             ))
         }
     }

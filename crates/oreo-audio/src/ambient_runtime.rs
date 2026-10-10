@@ -2,14 +2,15 @@ use oreo_core::CancellationToken;
 use std::collections::VecDeque;
 
 use crate::{
-    AmbientAttentionDecision, AmbientAttentionGate, AmbientTranscriber, AudioError, AudioErrorKind,
-    AudioLimits, ConversationAudioPhase, EnergyVad, PcmChunk, STT_FORMAT, VadConfig, VadDecision,
-    WakePipelineEvent,
+    AcousticAttentionDetector, AmbientAttentionDecision, AmbientAttentionGate, AmbientTranscriber,
+    AudioError, AudioErrorKind, AudioLimits, ConversationAudioPhase, EnergyVad, PcmChunk,
+    STT_FORMAT, VadConfig, VadDecision, WakePipelineEvent,
 };
 
 const CONVERSATION_WINDOW_SAMPLES: usize = 30 * 16_000;
 const MIN_TRANSCRIPT_CONFIDENCE: f32 = 0.35;
-const PRE_ROLL_CHUNKS: usize = 10;
+const WARM_PRE_ROLL_CHUNKS: usize = 10;
+const COLD_PRE_ROLL_CHUNKS: usize = 150;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum UtteranceState {
@@ -23,6 +24,7 @@ enum UtteranceState {
 /// leave this component after the local attention model accepts it.
 pub struct AmbientVoicePipeline {
     transcriber: Box<dyn AmbientTranscriber>,
+    detector: Box<dyn AcousticAttentionDetector>,
     attention: AmbientAttentionGate,
     attention_name: String,
     vad: EnergyVad,
@@ -39,6 +41,7 @@ pub struct AmbientVoicePipeline {
     latest_final_accepted: bool,
     latest_attention_match: bool,
     barge_in_confirmed: bool,
+    cold_attention_score: Option<f32>,
 }
 
 impl AmbientVoicePipeline {
@@ -49,6 +52,7 @@ impl AmbientVoicePipeline {
     /// Rejects invalid bounds, attention names, or embedded classifiers.
     pub fn new(
         transcriber: impl AmbientTranscriber + 'static,
+        detector: impl AcousticAttentionDetector + 'static,
         limits: AudioLimits,
         attention_name: &str,
     ) -> Result<Self, AudioError> {
@@ -65,13 +69,14 @@ impl AmbientVoicePipeline {
         transcriber.configure_attention_spotter(attention_name)?;
         Ok(Self {
             transcriber,
+            detector: Box::new(detector),
             attention: AmbientAttentionGate::new(attention_name)?,
             attention_name: attention_name.to_ascii_lowercase(),
             vad: EnergyVad::new(VadConfig::conversation())?,
             limits,
             samples: 0,
             max_samples,
-            pre_roll: VecDeque::with_capacity(PRE_ROLL_CHUNKS),
+            pre_roll: VecDeque::with_capacity(COLD_PRE_ROLL_CHUNKS),
             utterance_state: UtteranceState::Dormant,
             session_samples_left: 0,
             conversation_phase: ConversationAudioPhase::Listening,
@@ -81,6 +86,7 @@ impl AmbientVoicePipeline {
             latest_final_accepted: false,
             latest_attention_match: false,
             barge_in_confirmed: false,
+            cold_attention_score: None,
         })
     }
 
@@ -155,16 +161,30 @@ impl AmbientVoicePipeline {
                 .saturating_sub(chunk.samples().len());
         }
         let vad = self.vad.observe(chunk);
+        let attentive = self.attention.is_attentive();
+        let cold_candidate = if attentive {
+            None
+        } else {
+            self.detect_cold_candidate(vad, chunk, cancellation)?
+        };
+        if let Some(score) = cold_candidate {
+            self.cold_attention_score = Some(
+                self.cold_attention_score
+                    .map_or(score, |previous| previous.max(score)),
+            );
+        }
 
         if self.utterance_state == UtteranceState::Active {
             self.samples = self.samples.saturating_add(chunk.samples().len());
             self.transcriber.push(chunk, cancellation)?;
         } else {
             self.pre_roll.push_back(chunk.clone());
-            if self.pre_roll.len() > PRE_ROLL_CHUNKS {
+            if self.pre_roll.len() > COLD_PRE_ROLL_CHUNKS {
                 self.pre_roll.pop_front();
             }
-            if vad != VadDecision::SpeechStarted {
+            if (!attentive && cold_candidate.is_none())
+                || (attentive && vad != VadDecision::SpeechStarted)
+            {
                 if vad == VadDecision::Silence
                     && self.attention.is_attentive()
                     && self.session_samples_left == 0
@@ -177,6 +197,11 @@ impl AmbientVoicePipeline {
 
             self.transcriber.begin(STT_FORMAT)?;
             self.utterance_state = UtteranceState::Active;
+            if attentive {
+                while self.pre_roll.len() > WARM_PRE_ROLL_CHUNKS {
+                    self.pre_roll.pop_front();
+                }
+            }
             while let Some(buffered) = self.pre_roll.pop_front() {
                 self.samples = self.samples.saturating_add(buffered.samples().len());
                 self.transcriber.push(&buffered, cancellation)?;
@@ -203,8 +228,45 @@ impl AmbientVoicePipeline {
         Ok(None)
     }
 
+    fn detect_cold_candidate(
+        &mut self,
+        vad: VadDecision,
+        chunk: &PcmChunk,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<f32>, AudioError> {
+        match vad {
+            VadDecision::Silence => Ok(None),
+            VadDecision::Endpoint => {
+                self.detector.reset(cancellation)?;
+                Ok(None)
+            }
+            VadDecision::Speech => self.detector.push(chunk, cancellation),
+            VadDecision::SpeechStarted => {
+                let buffered: Vec<_> = self
+                    .pre_roll
+                    .iter()
+                    .rev()
+                    .take(WARM_PRE_ROLL_CHUNKS.saturating_sub(1))
+                    .rev()
+                    .cloned()
+                    .collect();
+                let mut strongest = None::<f32>;
+                for buffered_chunk in &buffered {
+                    if let Some(score) = self.detector.push(buffered_chunk, cancellation)? {
+                        strongest = Some(strongest.map_or(score, |value| value.max(score)));
+                    }
+                }
+                if let Some(score) = self.detector.push(chunk, cancellation)? {
+                    strongest = Some(strongest.map_or(score, |value| value.max(score)));
+                }
+                Ok(strongest)
+            }
+        }
+    }
+
     pub fn shutdown(&mut self) {
-        self.transcriber.abort();
+        self.transcriber.suspend();
+        self.detector.shutdown();
         self.utterance_state = UtteranceState::Dormant;
         self.pre_roll.clear();
         self.samples = 0;
@@ -220,8 +282,11 @@ impl AmbientVoicePipeline {
     ) -> Result<Option<WakePipelineEvent>, AudioError> {
         let transcript = self.transcriber.finish(cancellation)?;
         let confidence = self.transcriber.confidence();
-        let attention_detected = self.transcriber.attention_detected();
+        let attention_detected =
+            self.cold_attention_score.take().is_some() || self.transcriber.attention_detected();
+        self.transcriber.suspend();
         self.latest_attention_match = attention_detected;
+        self.detector.reset(cancellation)?;
         self.utterance_state = UtteranceState::Dormant;
         self.pre_roll.clear();
         self.vad = EnergyVad::new(VadConfig::conversation())?;
@@ -305,8 +370,8 @@ mod tests {
     use oreo_core::CancellationToken;
 
     use crate::{
-        AmbientTranscriber, AudioError, AudioFormat, AudioLimits, PcmChunk, STT_FORMAT,
-        StreamingTranscriber, TranscriptionConfidence,
+        AcousticAttentionDetector, AmbientTranscriber, AudioError, AudioFormat, AudioLimits,
+        PcmChunk, STT_FORMAT, StreamingTranscriber, TranscriptionConfidence,
     };
 
     use super::{AmbientVoicePipeline, contains_word, formed_partial};
@@ -319,6 +384,27 @@ mod tests {
 
     struct FakeTranscriber {
         stats: Arc<Mutex<TranscriberStats>>,
+    }
+
+    struct FakeDetector {
+        frames_until_candidate: usize,
+    }
+
+    impl AcousticAttentionDetector for FakeDetector {
+        fn push(
+            &mut self,
+            _chunk: &PcmChunk,
+            _cancellation: &CancellationToken,
+        ) -> Result<Option<f32>, AudioError> {
+            self.frames_until_candidate = self.frames_until_candidate.saturating_sub(1);
+            Ok((self.frames_until_candidate == 0).then_some(0.9))
+        }
+
+        fn reset(&mut self, _cancellation: &CancellationToken) -> Result<(), AudioError> {
+            Ok(())
+        }
+
+        fn shutdown(&mut self) {}
     }
 
     impl StreamingTranscriber for FakeTranscriber {
@@ -382,6 +468,9 @@ mod tests {
             FakeTranscriber {
                 stats: Arc::clone(&stats),
             },
+            FakeDetector {
+                frames_until_candidate: 10,
+            },
             AudioLimits::sbc(),
             "orion",
         )
@@ -409,6 +498,6 @@ mod tests {
             .expect("confirmed voice frame");
         let stats = stats.lock().expect("stats");
         assert_eq!(stats.begins, 1);
-        assert_eq!(stats.pushes, 10);
+        assert_eq!(stats.pushes, 24);
     }
 }

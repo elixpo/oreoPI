@@ -74,33 +74,28 @@ free-conversation recognizer with a restrictive command grammar.
 The laptop-selected daemon path is:
 
 ```text
-CPAL -> bounded 16 kHz conversion -> persistent Moonshine streaming worker
+CPAL -> energy VAD -> tiny Oreo openWakeWord model
+     -> bounded three-second pre-roll -> lazy Moonshine worker
      -> local contextual attention gate -> accepted turn only
      -> 30-second contextual conversation window
 ```
 
-The daemon continuously segments locally decoded speech at a conservative
-600 ms natural-silence endpoint. Moonshine Small Streaming is loaded once in
-an isolated local worker and reused; each utterance is capped at 30 seconds.
-Its configurable key-term and short-context bias improve the selected attention
-name without restricting recognition to a command grammar. Moonshine's own VAD
-is disabled because Oreo's bounded conversation VAD owns the utterance boundary;
-this keeps live final decoding aligned with the accepted whole-utterance
-benchmark. A tiny local contextual model still decides whether the complete
-phrase is directed at the assistant before any transcript can enter the
-Pollinations agent queue. Raw PCM is never persisted.
-
-`Orion` (`oh-RYE-un`) is the default acoustic attention name for the Oreo
-persona because its syllables are substantially clearer to the small English
-recognizer than “Oreo”. Set `OREO_ATTENTION_NAME` to one 3–24 letter ASCII word
-to evaluate another name. The product identity and spoken persona remain Oreo.
+The daemon first applies an energy gate, then the trained Oreo openWakeWord
+model. Moonshine Small Streaming is launched only for an acoustic candidate or
+a natural turn in an already-open conversation, and is fully suspended after
+each utterance because its Python streaming runtime consumes CPU even while
+idle. A bounded three-second ring preserves context preceding the wake sound.
+The contextual model then distinguishes a direct address from a reported or
+third-person mention before any transcript can enter the Pollinations queue.
+Raw PCM is never persisted. A different attention name requires a matching
+trained acoustic artifact; the bundled runtime therefore accepts `oreo` only.
 
 There are three interaction modes:
 
-- Saying only `Orion` emits `wake_accepted` and raises attention without making
+- Saying only `Oreo` emits `wake_accepted` and raises attention without making
   a network request.
-- An accepted contextual utterance such as “Orion, set a timer” or “what is the
-  weather, Orion?” is already the command. It emits `voice_command_ready`
+- An accepted contextual utterance such as “Oreo, set a timer” or “what is the
+  weather, Oreo?” is already the command. It emits `voice_command_ready`
   immediately after its endpoint and does not ask for the sentence again.
 - Each command opens or refreshes a 30-second engaged window. During that
   window, natural locally classified follow-ups do not need the name. An
@@ -133,7 +128,7 @@ or resetting the session.
 
 Cold attention requires both the configured name and local direct-address
 classification. Reported or third-person mentions such as “I am speaking to
-Orion” remain silent. Warm speech still passes through the separate local turn
+Oreo” remain silent. Warm speech still passes through the separate local turn
 classifier, so merely leaving the microphone open does not forward room audio.
 
 On a single laptop microphone, “nearest voice” means the dominant, clearly
@@ -150,7 +145,6 @@ For transcription-only validation, run the daemon from the repository root:
 
 ```bash
 rtk env OREO_VOICE_ENABLED=1 OREO_REPO_ROOT="$PWD" \
-  OREO_ATTENTION_NAME=orion \
   cargo run -p oreo-daemon --features voice-runtime
 ```
 
@@ -161,7 +155,6 @@ executing the file; process environment values take precedence. Then run:
 
 ```bash
 rtk env OREO_VOICE_ENABLED=1 OREO_AGENT_ENABLED=1 OREO_REPO_ROOT="$PWD" \
-  OREO_ATTENTION_NAME=orion \
   cargo run -p oreo-daemon --features voice-agent
 ```
 

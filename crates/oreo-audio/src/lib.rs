@@ -286,6 +286,35 @@ pub trait AmbientTranscriber: StreamingTranscriber + Send {
 
     fn confidence(&self) -> Option<TranscriptionConfidence>;
     fn attention_detected(&self) -> bool;
+
+    /// Releases an idle backend that cannot sleep efficiently. The next
+    /// utterance may lazily load it again.
+    fn suspend(&mut self) {
+        self.abort();
+    }
+}
+
+/// Cheap, always-on acoustic attention detector used before full STT.
+pub trait AcousticAttentionDetector: Send {
+    /// Returns a score only when the configured attention sound is detected.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the detector backend or audio format is invalid.
+    fn push(
+        &mut self,
+        chunk: &PcmChunk,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<f32>, AudioError>;
+
+    /// Clears bounded acoustic history after a completed candidate.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the detector backend cannot reset.
+    fn reset(&mut self, cancellation: &CancellationToken) -> Result<(), AudioError>;
+
+    fn shutdown(&mut self);
 }
 
 pub trait StreamingSynthesizer {

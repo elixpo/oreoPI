@@ -10,7 +10,7 @@ default = []
 openwakeword = []
 moonshine-stt = []
 pocket-tts = []
-voice-runtime = ["moonshine-stt"]
+voice-runtime = ["moonshine-stt", "openwakeword"]
 legacy-wake-runtime = ["openwakeword", "vosk-stt"]
 vosk-stt = ["dep:vosk"]
 

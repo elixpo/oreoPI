@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use oreo_core::CancellationToken;
 
-use crate::{AudioError, AudioErrorKind, PcmChunk, STT_FORMAT};
+use crate::{AcousticAttentionDetector, AudioError, AudioErrorKind, PcmChunk, STT_FORMAT};
 
 const REQUEST_AUDIO: u8 = 1;
 const REQUEST_RESET: u8 = 2;
@@ -311,6 +311,25 @@ impl OpenWakeWordDetector {
 impl Drop for OpenWakeWordDetector {
     fn drop(&mut self) {
         self.stop_worker();
+    }
+}
+
+impl AcousticAttentionDetector for OpenWakeWordDetector {
+    fn push(
+        &mut self,
+        chunk: &PcmChunk,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<f32>, AudioError> {
+        OpenWakeWordDetector::push(self, chunk, cancellation)
+            .map(|candidate| candidate.map(|candidate| candidate.score))
+    }
+
+    fn reset(&mut self, cancellation: &CancellationToken) -> Result<(), AudioError> {
+        OpenWakeWordDetector::reset(self, cancellation)
+    }
+
+    fn shutdown(&mut self) {
+        OpenWakeWordDetector::shutdown(self);
     }
 }
 

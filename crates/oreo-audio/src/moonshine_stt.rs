@@ -450,7 +450,7 @@ impl AmbientTranscriber for MoonshineTranscriber {
             ));
         }
         self.attention_name = Some(normalized);
-        self.start_worker()
+        Ok(())
     }
 
     fn live_transcript(&mut self) -> Result<String, AudioError> {
@@ -470,6 +470,11 @@ impl AmbientTranscriber for MoonshineTranscriber {
 
     fn attention_detected(&self) -> bool {
         !self.active && self.attention_detected
+    }
+
+    fn suspend(&mut self) {
+        self.stop_worker();
+        self.reset_utterance();
     }
 }
 

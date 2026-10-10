@@ -192,6 +192,8 @@ fn speech_loop(
             Ok(request) => request,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if context.speaking.load(Ordering::Acquire) && output.stats().queued_samples == 0 {
+                    output.stop();
+                    output_active = false;
                     context.speaking.store(false, Ordering::Release);
                     if let Ok(mut echo) = context.echo.lock() {
                         echo.mark_finished();
@@ -206,14 +208,6 @@ fn speech_loop(
             continue;
         }
         let was_idle = !context.speaking.swap(true, Ordering::AcqRel);
-        // Reopen the device between complete responses. Some ALSA devices keep
-        // an apparently live CPAL stream after draining while no longer
-        // consuming the next response, which previously left the worker stuck
-        // after `speech_generating` with no `speech_started` event.
-        if was_idle && output_active {
-            output.stop();
-            output_active = false;
-        }
         (context.emit)(SpeechRuntimeEvent::Generating);
         if !output_active && output.begin(native_format).is_err() {
             (context.emit)(SpeechRuntimeEvent::Failed);
