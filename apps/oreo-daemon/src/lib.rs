@@ -522,7 +522,7 @@ mod unix {
         }
     }
 
-    #[cfg(not(feature = "voice-agent"))]
+    #[cfg(all(feature = "voice-runtime", not(feature = "voice-agent")))]
     fn confirm_barge(
         _config: &VoiceConfig,
         _pipeline: &mut AmbientVoicePipeline,

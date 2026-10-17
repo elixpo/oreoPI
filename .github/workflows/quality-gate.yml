@@ -91,6 +91,10 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
+      - name: Install OreoPI Linux audio build dependencies
+        if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'rust'
+        run: sudo apt-get update && sudo apt-get install --yes libasound2-dev pkg-config
+
       - name: Cache Rust build
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'rust'
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
