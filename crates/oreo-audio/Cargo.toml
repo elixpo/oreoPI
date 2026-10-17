@@ -8,8 +8,10 @@ license-file.workspace = true
 [features]
 default = []
 openwakeword = []
+moonshine-stt = []
 pocket-tts = []
-voice-runtime = ["openwakeword", "vosk-stt"]
+voice-runtime = ["moonshine-stt", "openwakeword"]
+legacy-wake-runtime = ["openwakeword", "vosk-stt"]
 vosk-stt = ["dep:vosk"]
 
 [dependencies]

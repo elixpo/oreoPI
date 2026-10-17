@@ -46,7 +46,7 @@ jobs:
     steps:
       - name: Authorize exact request
         id: gate
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
         env:
           INPUT_SCOPE: ${{ inputs.scope }}
           INPUT_NUMBER: ${{ inputs.number }}
@@ -91,14 +91,14 @@ jobs:
 
       - name: Checkout centralized OreoFlow runtime
         if: steps.gate.outputs.authorized == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: elixpo/agent.elixpo
           ref: ${{ vars.OREOFLOW_RUNTIME_REF || 'main' }}
           path: .oreoflow-runtime
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         if: steps.gate.outputs.authorized == 'true'
         with:
           python-version: "3.11"
@@ -128,7 +128,7 @@ jobs:
 
       - name: Upload contracted run receipt
         if: always() && steps.gate.outputs.authorized == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: repository-agent-${{ github.run_id }}
           path: ${{ runner.temp }}/oreoflow-repository-agent

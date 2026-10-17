@@ -3,10 +3,14 @@
 //! Raw PCM exists only in short-lived chunks. This crate has no persistence,
 //! network, credential, or model-loading API.
 
+#[cfg(feature = "voice-runtime")]
+mod ambient_runtime;
 mod conversation;
 mod converter;
 mod cpal_io;
 mod metrics;
+#[cfg(feature = "moonshine-stt")]
+mod moonshine_stt;
 #[cfg(feature = "openwakeword")]
 mod openwakeword;
 mod pipeline;
@@ -15,10 +19,12 @@ mod pocket_tts;
 mod pronunciation;
 mod stream;
 mod vad;
+#[cfg(any(feature = "voice-runtime", feature = "legacy-wake-runtime"))]
+mod voice_events;
 #[cfg(feature = "vosk-stt")]
 mod vosk_stt;
 mod wake;
-#[cfg(feature = "voice-runtime")]
+#[cfg(feature = "legacy-wake-runtime")]
 mod wake_runtime;
 mod wav;
 
@@ -27,6 +33,8 @@ use std::fmt;
 
 use oreo_core::CancellationToken;
 
+#[cfg(feature = "voice-runtime")]
+pub use ambient_runtime::AmbientVoicePipeline;
 pub use conversation::{ConversationDirective, ConversationLanguage};
 pub use converter::{ConvertingSource, PcmConverter};
 pub use cpal_io::{
@@ -34,6 +42,8 @@ pub use cpal_io::{
     default_audio_devices,
 };
 pub use metrics::{LatencyMetric, LatencyReport, LatencyTargets, LatencyWindow};
+#[cfg(feature = "moonshine-stt")]
+pub use moonshine_stt::{MoonshineSttConfig, MoonshineTranscriber};
 #[cfg(feature = "openwakeword")]
 pub use openwakeword::{OpenWakeWordConfig, OpenWakeWordDetector, WakeCandidate};
 pub use pipeline::{PipelinePhase, PushToTalkState};
@@ -42,14 +52,16 @@ pub use pocket_tts::{PocketTtsConfig, PocketTtsSynthesizer};
 pub use pronunciation::normalize_for_speech;
 pub use stream::{SpeechChunker, transcribe_source};
 pub use vad::{EnergyVad, VadConfig, VadDecision};
+#[cfg(any(feature = "voice-runtime", feature = "legacy-wake-runtime"))]
+pub use voice_events::{ConversationAudioPhase, WakePipelineEvent};
 #[cfg(feature = "vosk-stt")]
 pub use vosk_stt::{VoskConfidence, VoskTranscriber};
 pub use wake::{
-    WakeAudioWindow, WakeIntentClassifier, WakeIntentDecision, WakeIntentDisposition,
-    WarmTurnClassifier,
+    AmbientAttentionDecision, AmbientAttentionGate, WakeAudioWindow, WakeIntentClassifier,
+    WakeIntentDecision, WakeIntentDisposition, WarmTurnClassifier,
 };
-#[cfg(feature = "voice-runtime")]
-pub use wake_runtime::{ConversationAudioPhase, WakeCommandPipeline, WakePipelineEvent};
+#[cfg(feature = "legacy-wake-runtime")]
+pub use wake_runtime::WakeCommandPipeline;
 pub use wav::WavSource;
 
 pub const MAX_CHANNELS: u16 = 2;
@@ -247,6 +259,62 @@ pub trait StreamingTranscriber {
     ///
     /// Returns a redacted backend or cancellation failure.
     fn finish(&mut self, cancellation: &CancellationToken) -> Result<String, AudioError>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TranscriptionConfidence {
+    pub mean: f32,
+    pub minimum: f32,
+    pub words: u32,
+}
+
+/// Extra local signals required by the continuously listening voice pipeline.
+pub trait AmbientTranscriber: StreamingTranscriber + Send {
+    /// Configures a soft acoustic bias for the user-selected attention name.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid names or changes after streaming begins.
+    fn configure_attention_spotter(&mut self, name: &str) -> Result<(), AudioError>;
+
+    /// Returns the bounded current partial transcript.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no utterance is active or the backend fails.
+    fn live_transcript(&mut self) -> Result<String, AudioError>;
+
+    fn confidence(&self) -> Option<TranscriptionConfidence>;
+    fn attention_detected(&self) -> bool;
+
+    /// Releases an idle backend that cannot sleep efficiently. The next
+    /// utterance may lazily load it again.
+    fn suspend(&mut self) {
+        self.abort();
+    }
+}
+
+/// Cheap, always-on acoustic attention detector used before full STT.
+pub trait AcousticAttentionDetector: Send {
+    /// Returns a score only when the configured attention sound is detected.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the detector backend or audio format is invalid.
+    fn push(
+        &mut self,
+        chunk: &PcmChunk,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<f32>, AudioError>;
+
+    /// Clears bounded acoustic history after a completed candidate.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the detector backend cannot reset.
+    fn reset(&mut self, cancellation: &CancellationToken) -> Result<(), AudioError>;
+
+    fn shutdown(&mut self);
 }
 
 pub trait StreamingSynthesizer {

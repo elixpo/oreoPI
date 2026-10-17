@@ -1,5 +1,6 @@
 /target/
 /.venv/
+/.venv-stt/
 /.venv-wake/
 __pycache__/
 /.elixpo/*

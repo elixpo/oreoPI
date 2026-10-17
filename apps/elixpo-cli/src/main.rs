@@ -927,7 +927,29 @@ fn playback_test(seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
             phase = (phase + phase_step) % (2_f32 * std::f32::consts::PI);
             samples.extend(std::iter::repeat_n(value, usize::from(format.channels)));
         }
-        output.write(&PcmChunk::new(format, samples)?, &cancellation)?;
+        let chunk = PcmChunk::new(format, samples)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match output.write(&chunk, &cancellation) {
+                Ok(()) => break,
+                Err(error) if error.kind == oreo_audio::AudioErrorKind::Capacity => {
+                    if std::time::Instant::now() >= deadline {
+                        let stats = output.stats();
+                        return Err(format!(
+                            "speaker queue stalled: queued={}, played={}, content={}, underruns={}, stream_errors={}",
+                            stats.queued_samples,
+                            stats.played_samples,
+                            stats.content_samples_played,
+                            stats.underrun_callbacks,
+                            stats.stream_errors,
+                        )
+                        .into());
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     std::thread::sleep(Duration::from_millis(100));

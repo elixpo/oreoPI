@@ -1,6 +1,6 @@
 # Audio engine candidates
 
-Status: laptop STT selected; PocketTTS measurement pass prepared for WP-004
+Status: Moonshine Small Streaming and PocketTTS selected on the laptop
 
 The `oreo-audio` contracts intentionally contain no engine-specific types.
 Candidates become build or image dependencies only after they pass the same
@@ -10,7 +10,7 @@ and checksummed separately from application packages.
 | Layer | Primary candidate | Fallback | Benchmark focus |
 |---|---|---|---|
 | Capture/playback | [CPAL 0.18.2](https://github.com/RustAudio/cpal/releases/tag/v0.18.2), selected | Direct ALSA adapter only if CPAL measurements require it | PipeWire/PulseAudio/ALSA behavior, callback overruns, fixed-buffer latency, AMD64/ARM64 packaging |
-| Offline STT | [Vosk 0.3.45](https://alphacephei.com/vosk/) with `vosk-model-small-en-us-0.15`, selected for the laptop profile | [sherpa-onnx 1.13.8](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8) with English-only 20M streaming Zipformer INT8 as the resource fallback | Accuracy on Oreo command fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
+| Offline STT | [Moonshine Voice 0.1.5](https://github.com/moonshine-ai/moonshine) Small Streaming, selected laptop runtime | Vosk 0.3.45 is the explicit legacy fallback; sherpa-onnx 20M remains the resource fallback | Accuracy on Oreo command and natural-speech fixtures, endpoint latency, cached latency, RSS, model size, cancellation, Linux AArch64 availability |
 | Streaming TTS | PocketTTS 3.3.0 Python reference, selected for the laptop profile behind an isolated worker | sherpa-onnx PocketTTS remains an ARM/runtime experiment; Kitten Nano rejected | First-audio latency, real-time factor, RSS, cancellation, pronunciation, voice/model licensing, AMD64/ARM64 packaging |
 
 ## Selection rules
@@ -24,9 +24,9 @@ and checksummed separately from application packages.
 - Record package, native library, model/config commit, checksum, licence, and
   measured resource table before promoting a candidate into
   `docs/third-party.md`.
-- Re-run Vosk, sherpa-onnx, and PocketTTS on Linux AArch64 before the hardware
-  release; an upstream binary existing is not a substitute for a device
-  benchmark.
+- Re-run Moonshine, Vosk, sherpa-onnx, and PocketTTS on Linux AArch64 before
+  the hardware release; an upstream binary existing is not a substitute for a
+  device benchmark.
 
 Vosk is the selected laptop primary and low-resource baseline: its official
 small-model guidance targets mobile/Raspberry Pi-class systems, but its older
@@ -34,6 +34,14 @@ native stack and accuracy must be measured against current sherpa-onnx models
 rather than assumed. PocketTTS source is MIT. The gated model and selected
 Alba MacKenna voice are CC BY 4.0 and pinned independently in the model
 manifest; product attribution must cover both artefacts.
+
+Moonshine Small Streaming is now the selected accuracy-first laptop STT and
+daemon default. Upstream publishes it as a 123M-parameter English
+streaming model with 7.84% average WER across the Open ASR Leaderboard's eight
+datasets. Oreo pins the 0.1.5 runtime and quantized 2026-08-21 model catalogue
+entry in a repository-local cache. The daemon keeps it alive behind a bounded
+binary worker protocol. Live interruption, RSS, long-run, and AArch64 gates
+remain before the Vosk fallback is removed or a hardware image is approved.
 
 The first TTS pass uses the six-layer default English model, not the larger
 24-layer variant. Dynamic int8 is enabled because upstream reports lower CPU
@@ -73,6 +81,23 @@ from the first comparison because its published NPTEL word error rate is
 49.05%, an excessive accuracy tradeoff for four megabytes of storage.
 
 ## Laptop selection result
+
+The 2026-10-09 identical-fixture rerun selected Moonshine Small Streaming for
+integration. It produced zero word errors in all 15 measured hypotheses,
+including an exact `device-status` result where Vosk had previously varied.
+
+| Candidate | Aggregate WER | Warm p95 | After-run RSS | Stability |
+|---|---:|---:|---:|---|
+| Moonshine Small Streaming quantized | 0.00% | 744 ms | 410,608 KiB | 15/15 hypotheses stable |
+| Vosk small en-US 0.15 | 4.71% | 779 ms | 193,476 KiB | 14/15 hypotheses matched the modal transcript |
+| Sherpa Zipformer en-20M INT8 | 41.18% | 228 ms | 143,988 KiB | 15/15 hypotheses stable |
+
+Moonshine loaded in 414 ms and processed every fixture faster than real time.
+Its accuracy win costs roughly 212 MiB over the earlier Vosk after-run result.
+The streaming daemon adapter, broader noisy corpus, combined STT+TTS memory
+measurement, and AArch64 run remain mandatory before hardware release.
+
+### Earlier Vosk baseline
 
 The first operator-recorded comparison used three English Oreo commands, five
 measured runs per command, one inference thread, identical 16 kHz mono PCM16

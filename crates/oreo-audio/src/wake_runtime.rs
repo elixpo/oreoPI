@@ -1,41 +1,15 @@
 use oreo_core::CancellationToken;
 
 use crate::{
-    AudioError, AudioErrorKind, AudioLimits, ConversationDirective, ConversationLanguage,
-    EnergyVad, OpenWakeWordDetector, PcmChunk, STT_FORMAT, StreamingTranscriber, VadConfig,
-    VadDecision, VoskTranscriber, WakeAudioWindow, WakeIntentClassifier, WakeIntentDisposition,
-    WarmTurnClassifier,
+    AudioError, AudioErrorKind, AudioLimits, ConversationAudioPhase, ConversationDirective,
+    ConversationLanguage, EnergyVad, OpenWakeWordDetector, PcmChunk, STT_FORMAT,
+    StreamingTranscriber, VadConfig, VadDecision, VoskTranscriber, WakeAudioWindow,
+    WakeIntentClassifier, WakeIntentDisposition, WakePipelineEvent, WarmTurnClassifier,
 };
 
 const COOLDOWN_SAMPLES: usize = 8_000;
 const COMMAND_START_TIMEOUT_SAMPLES: usize = 5 * 16_000;
 const CONVERSATION_WINDOW_SAMPLES: usize = 30 * 16_000;
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum WakePipelineEvent {
-    WakeAccepted {
-        score: f32,
-    },
-    CommandReady {
-        transcript: String,
-    },
-    CommandTimedOut,
-    ConversationEnded,
-    ClarificationNeeded,
-    /// A non-trivial live utterance was heard while Oreo was speaking. The
-    /// daemon compares it with the private playback reference before ducking
-    /// output; the partial text is never logged or persisted.
-    PossibleBargeIn {
-        transcript: String,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConversationAudioPhase {
-    Listening,
-    Thinking,
-    Speaking,
-}
 
 enum RuntimeState {
     Listening,
@@ -58,6 +32,7 @@ enum RuntimeState {
         samples: usize,
         session_samples_left: usize,
         last_live_transcript: String,
+        barge_in_confirmed: bool,
     },
     Cooldown {
         samples_left: usize,
@@ -67,7 +42,7 @@ enum RuntimeState {
 enum EngagedCaptureProgress {
     Continue,
     BargeIn(String),
-    Finished(usize),
+    Finished(usize, bool),
 }
 
 enum CommandCaptureProgress {
@@ -132,6 +107,22 @@ impl WakeCommandPipeline {
     /// speaking. The microphone continues processing possible steering turns.
     pub fn set_conversation_phase(&mut self, phase: ConversationAudioPhase) {
         self.conversation_phase = phase;
+    }
+
+    /// Marks the active duplex capture as an explicitly accepted interruption.
+    /// Its completed transcript no longer needs to pass the incidental-room-
+    /// speech classifier a second time.
+    #[must_use]
+    pub fn confirm_barge_in(&mut self) -> bool {
+        if let RuntimeState::EngagedCapturing {
+            barge_in_confirmed, ..
+        } = &mut self.state
+        {
+            *barge_in_confirmed = true;
+            true
+        } else {
+            false
+        }
     }
 
     /// Warms the acoustic worker before microphone processing begins.
@@ -227,6 +218,7 @@ impl WakeCommandPipeline {
                 samples,
                 session_samples_left,
                 last_live_transcript,
+                barge_in_confirmed,
             } => match advance_engaged_capture(
                 &mut self.transcriber,
                 self.conversation_phase,
@@ -237,16 +229,16 @@ impl WakeCommandPipeline {
                 samples,
                 session_samples_left,
                 last_live_transcript,
+                *barge_in_confirmed,
             )? {
                 EngagedCaptureProgress::Continue => Ok(None),
-                EngagedCaptureProgress::BargeIn(transcript) => Ok(Some(barge_in(transcript))),
-                EngagedCaptureProgress::Finished(remaining) => {
-                    self.finish_engaged_capture(remaining, cancellation)
+                EngagedCaptureProgress::BargeIn(text) => filter_barge(&self.warm_classifier, text),
+                EngagedCaptureProgress::Finished(left, yes) => {
+                    self.finish_warm_capture(left, yes, cancellation)
                 }
             },
             RuntimeState::Cooldown { samples_left } => {
-                *samples_left = samples_left.saturating_sub(chunk.samples().len());
-                if *samples_left == 0 {
+                if cooldown_finished(samples_left, chunk.samples().len()) {
                     self.state = RuntimeState::Listening;
                 }
                 Ok(None)
@@ -365,18 +357,20 @@ impl WakeCommandPipeline {
             samples: samples.len(),
             session_samples_left,
             last_live_transcript: String::new(),
+            barge_in_confirmed: false,
         };
         Ok(())
     }
 
-    fn finish_engaged_capture(
+    fn finish_warm_capture(
         &mut self,
         session_samples_left: usize,
+        barge_in_confirmed: bool,
         cancellation: &CancellationToken,
     ) -> Result<Option<WakePipelineEvent>, AudioError> {
         let transcript = self.transcriber.finish(cancellation)?;
         if !transcript.trim().is_empty() {
-            if self.classifier.mentions_spoken_identity(&transcript) {
+            if !barge_in_confirmed && self.classifier.mentions_spoken_identity(&transcript) {
                 let disposition = self.classifier.classify(&transcript)?.disposition;
                 if disposition != WakeIntentDisposition::Addressed {
                     self.wake_window.clear();
@@ -392,7 +386,7 @@ impl WakeCommandPipeline {
                     return Ok((disposition == WakeIntentDisposition::Clarify)
                         .then_some(WakePipelineEvent::ClarificationNeeded));
                 }
-            } else if !self.warm_classifier.accepts(&transcript)? {
+            } else if !barge_in_confirmed && !self.warm_classifier.accepts(&transcript)? {
                 self.wake_window.clear();
                 self.state = RuntimeState::Engaged {
                     vad: EnergyVad::new(VadConfig::conversation())?,
@@ -486,6 +480,11 @@ fn consume_session_time(samples_left: &mut usize, samples: usize, held: bool) {
     }
 }
 
+fn cooldown_finished(samples_left: &mut usize, samples: usize) -> bool {
+    *samples_left = samples_left.saturating_sub(samples);
+    *samples_left == 0
+}
+
 fn tick_session(samples_left: &mut usize, chunk: &PcmChunk, held: bool) {
     consume_session_time(samples_left, chunk.samples().len(), held);
 }
@@ -530,6 +529,7 @@ fn advance_engaged_capture(
     samples: &mut usize,
     session_samples_left: &mut usize,
     last_live_transcript: &mut String,
+    barge_in_confirmed: bool,
 ) -> Result<EngagedCaptureProgress, AudioError> {
     *samples = samples.saturating_add(chunk.samples().len());
     tick_session(
@@ -547,7 +547,10 @@ fn advance_engaged_capture(
         }
     }
     if vad_decision == VadDecision::Endpoint || *samples >= max_command_samples {
-        Ok(EngagedCaptureProgress::Finished(*session_samples_left))
+        Ok(EngagedCaptureProgress::Finished(
+            *session_samples_left,
+            barge_in_confirmed,
+        ))
     } else {
         Ok(EngagedCaptureProgress::Continue)
     }
@@ -566,6 +569,21 @@ fn barge_in(transcript: String) -> WakePipelineEvent {
     WakePipelineEvent::PossibleBargeIn { transcript }
 }
 
+fn filter_barge(
+    classifier: &WarmTurnClassifier,
+    transcript: String,
+) -> Result<Option<WakePipelineEvent>, AudioError> {
+    Ok(classifier
+        .accepts(&transcript)?
+        .then(|| barge_in(transcript)))
+}
+
+impl Drop for WakeCommandPipeline {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::has_barge_in_evidence;
@@ -576,11 +594,5 @@ mod tests {
         assert!(has_barge_in_evidence("wait listen"));
         assert!(has_barge_in_evidence("explain supernovae"));
         assert!(has_barge_in_evidence("choose another route"));
-    }
-}
-
-impl Drop for WakeCommandPipeline {
-    fn drop(&mut self) {
-        self.shutdown();
     }
 }

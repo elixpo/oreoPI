@@ -2,6 +2,36 @@ schema_version = 1
 cache_directory = "models/cache"
 
 [[models]]
+id = "moonshine-small-streaming-en-quantized-2026-08-21"
+engine = "moonshine-voice"
+engine_version = "0.1.5"
+language = "en"
+role = "laptop-primary"
+status = "selected for streaming integration; AArch64 and combined voice RSS pending"
+source = "https://download.moonshine.ai/model/small-streaming-en/quantized_26_08_21"
+installed_directory = "moonshine-voice/download.moonshine.ai/model/small-streaming-en/quantized_26_08_21"
+architecture = "small-streaming"
+architecture_id = 4
+parameters = 123000000
+quantization = "ONNX Runtime quantized .ort"
+retained_files = [
+  "adapter.ort",
+  "cross_kv.ort",
+  "decoder_kv.ort",
+  "encoder.ort",
+  "frontend.model.ort",
+  "frontend.weights.ort",
+  "streaming_config.json",
+  "tokenizer.bin",
+]
+published_open_asr_average_wer = 0.0784
+oreo_laptop_wer = 0.0
+oreo_laptop_latency_ms_p95 = 743.8488699990558
+oreo_laptop_loaded_rss_kib = 399760
+acquired_sha256 = "c61e93ad0f78b93b6c7519793b50f5559427975d426f5a1106735a2f45dc5e1a"
+licence = "MIT"
+
+[[models]]
 id = "sherpa-zipformer-en-20m-int8-2023-02-17"
 engine = "sherpa-onnx"
 language = "en"

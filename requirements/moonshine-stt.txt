@@ -1,0 +1,2 @@
+# Isolated benchmark and future worker dependency. Do not add to the daemon image yet.
+moonshine-voice==0.1.5

@@ -235,3 +235,57 @@ fn model_discovery_retries_only_to_its_configured_bound() {
     assert!(error.retryable);
     server.finish();
 }
+
+#[test]
+fn chat_retries_before_a_response_stream_begins() {
+    let server = FixtureServer::spawn(vec![
+        Fixture {
+            method: "POST",
+            path: "/v1/chat/completions",
+            authenticated: true,
+            status: "503 Service Unavailable",
+            content_type: "application/json",
+            body: "{}",
+        },
+        Fixture {
+            method: "POST",
+            path: "/v1/chat/completions",
+            authenticated: true,
+            status: "200 OK",
+            content_type: "text/event-stream",
+            body: concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"recovered\"},",
+                "\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+        },
+    ]);
+    let mut config = PollinationsConfig::new("sk_fixture")
+        .expect("config should be valid")
+        .with_base_url(&server.origin)
+        .expect("fixture URL should be valid");
+    config.retry = RetryPolicy {
+        max_attempts: 2,
+        base_delay: Duration::ZERO,
+    };
+    let provider = PollinationsProvider::new(config).expect("provider should build");
+
+    runtime().block_on(async {
+        let mut stream = provider
+            .chat_stream(ChatRequest {
+                model: "openai".to_owned(),
+                messages: vec![ChatMessage::text(ChatRole::User, "hello")],
+                tools: Vec::new(),
+                tool_choice: ToolChoice::None,
+                max_output_tokens: Some(16),
+            })
+            .await
+            .expect("second attempt should open the stream");
+        assert_eq!(
+            stream.next().await.expect("event should decode"),
+            Some(ChatEvent::TextDelta("recovered".to_owned()))
+        );
+    });
+    server.finish();
+}

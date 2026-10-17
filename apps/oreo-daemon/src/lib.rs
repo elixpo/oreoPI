@@ -28,11 +28,13 @@ mod unix {
     #[cfg(feature = "voice-agent")]
     use crate::speech_runtime::SpeechRuntimeEvent;
 
+    #[cfg(feature = "voice-agent")]
+    use oreo_audio::ConversationAudioPhase;
     #[cfg(feature = "voice-runtime")]
     use oreo_audio::{
-        AudioLimits, AudioSource, ConversationAudioPhase, ConvertingSource, CpalInputSource,
-        OpenWakeWordConfig, OpenWakeWordDetector, STT_FORMAT, VoskTranscriber, WakeCommandPipeline,
-        WakePipelineEvent,
+        AmbientVoicePipeline, AudioLimits, AudioSource, ConvertingSource, CpalInputSource,
+        MoonshineSttConfig, MoonshineTranscriber, OpenWakeWordConfig, OpenWakeWordDetector,
+        STT_FORMAT, WakePipelineEvent,
     };
     #[cfg(feature = "voice-runtime")]
     use oreo_core::CancellationToken;
@@ -53,6 +55,10 @@ mod unix {
 
     pub struct VoiceConfig {
         pub repository_root: PathBuf,
+        #[cfg(feature = "voice-runtime")]
+        attention_name: String,
+        #[cfg(feature = "voice-runtime")]
+        debug_transcripts: bool,
         #[cfg(feature = "voice-agent")]
         agent_config: Option<VoiceAgentConfig>,
         #[cfg(feature = "voice-agent")]
@@ -64,6 +70,10 @@ mod unix {
         pub fn for_repository(root: impl AsRef<Path>) -> Self {
             Self {
                 repository_root: root.as_ref().to_path_buf(),
+                #[cfg(feature = "voice-runtime")]
+                attention_name: "oreo".to_owned(),
+                #[cfg(feature = "voice-runtime")]
+                debug_transcripts: false,
                 #[cfg(feature = "voice-agent")]
                 agent_config: None,
                 #[cfg(feature = "voice-agent")]
@@ -250,6 +260,10 @@ mod unix {
     }
 
     #[cfg(not(feature = "voice-agent"))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "keep the lifecycle API identical across feature configurations"
+    )]
     const fn spawn_voice_agent(
         _voice_config: &mut Option<VoiceConfig>,
     ) -> Result<Option<()>, DaemonError> {
@@ -262,6 +276,10 @@ mod unix {
     }
 
     #[cfg(not(feature = "voice-agent"))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "keep the lifecycle API identical across feature configurations"
+    )]
     const fn join_voice_agent(_agent: Option<()>) -> Result<(), DaemonError> {
         Ok(())
     }
@@ -287,6 +305,10 @@ mod unix {
     }
 
     #[cfg(not(feature = "voice-runtime"))]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "consume the disabled runtime configuration after validating it"
+    )]
     fn spawn_voice(
         _shared: &Arc<SharedState>,
         config: Option<VoiceConfig>,
@@ -312,6 +334,10 @@ mod unix {
     }
 
     #[cfg(not(feature = "voice-runtime"))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "keep the lifecycle API identical across feature configurations"
+    )]
     const fn join_voice(_voice: Option<()>) -> Result<(), DaemonError> {
         Ok(())
     }
@@ -341,25 +367,29 @@ mod unix {
     fn voice_session(shared: &Arc<SharedState>, config: &VoiceConfig) -> Result<(), DaemonError> {
         let limits = AudioLimits::sbc();
         let cancellation = CancellationToken::new();
-        let detector =
+        let mut detector =
             OpenWakeWordDetector::new(OpenWakeWordConfig::for_repository(&config.repository_root))
                 .map_err(voice_error)?;
-        let transcriber = VoskTranscriber::load(
-            config
-                .repository_root
-                .join("models/cache/vosk-model-small-en-us-0.15"),
+        detector.prewarm(&cancellation).map_err(voice_error)?;
+        let transcriber = MoonshineTranscriber::load(
+            MoonshineSttConfig::for_repository(&config.repository_root),
             limits,
         )
         .map_err(voice_error)?;
         let mut pipeline =
-            WakeCommandPipeline::new(detector, transcriber, limits).map_err(voice_error)?;
-        pipeline.prewarm(&cancellation).map_err(voice_error)?;
+            AmbientVoicePipeline::new(transcriber, detector, limits, &config.attention_name)
+                .map_err(voice_error)?;
         let input = CpalInputSource::open_default(limits).map_err(voice_error)?;
         let capture_control = input.control();
         let mut source = ConvertingSource::new(input, STT_FORMAT, limits).map_err(voice_error)?;
         write_log(LogEvent::VoiceListening, LogOutcome::Succeeded);
         #[cfg(feature = "voice-agent")]
         let mut last_phase = ConversationPhase::Listening;
+        let mut barge_checks = 0_u8;
+        let mut last_debug_partial = String::new();
+        if config.debug_transcripts {
+            write_debug_event("transcript_debug_enabled", None);
+        }
 
         while !shared.stopping.load(Ordering::Acquire) {
             let Some(chunk) = source.next_chunk(&cancellation).map_err(voice_error)? else {
@@ -367,44 +397,40 @@ mod unix {
             };
             #[cfg(feature = "voice-agent")]
             update_conversation_phase(config, &mut pipeline, &mut last_phase);
-            match pipeline
+            let event = pipeline
                 .process(&chunk, &cancellation)
-                .map_err(voice_error)?
+                .map_err(voice_error)?;
+            if config.debug_transcripts {
+                let partial = pipeline.latest_partial();
+                if !partial.trim().is_empty() && partial != last_debug_partial {
+                    write_debug_event("live_transcript", Some(partial));
+                    partial.clone_into(&mut last_debug_partial);
+                } else if partial.is_empty() {
+                    last_debug_partial.clear();
+                }
+            }
+            let final_accepted = pipeline.latest_final_was_accepted();
+            if let Some(final_text) = pipeline.take_final_transcript()
+                && config.debug_transcripts
             {
+                write_debug_event(
+                    if final_accepted {
+                        "transcript_accepted"
+                    } else {
+                        "transcript_rejected"
+                    },
+                    Some(&final_text),
+                );
+            }
+            if pipeline.take_attention_match() && config.debug_transcripts {
+                write_debug_event("acoustic_attention_match", None);
+            }
+            match event {
                 Some(WakePipelineEvent::WakeAccepted { .. }) => {
                     write_log(LogEvent::WakeAccepted, LogOutcome::Succeeded);
                 }
                 Some(WakePipelineEvent::CommandReady { transcript }) => {
-                    if transcript.trim().is_empty() {
-                        return Err(DaemonError::new(
-                            DaemonErrorKind::Voice,
-                            "voice runtime produced an empty command",
-                        ));
-                    }
-                    #[cfg(feature = "voice-agent")]
-                    if config
-                        .agent_ingress
-                        .as_ref()
-                        .is_some_and(|agent| agent.resembles_output(&transcript))
-                    {
-                        write_log(LogEvent::VoiceEchoRejected, LogOutcome::Denied);
-                        continue;
-                    }
-                    write_log(LogEvent::VoiceCommandReady, LogOutcome::Succeeded);
-                    #[cfg(feature = "voice-agent")]
-                    if let Some(agent) = &config.agent_ingress {
-                        match agent.submit(&transcript) {
-                            Ok(oreo_agent::TurnSubmission::Queued) => {
-                                write_log(LogEvent::AgentTurnQueued, LogOutcome::Succeeded);
-                            }
-                            Ok(oreo_agent::TurnSubmission::InterruptRequested) => {
-                                write_log(LogEvent::AgentTurnInterrupted, LogOutcome::Succeeded);
-                            }
-                            Err(_) => {
-                                write_log(LogEvent::AgentTurnRejected, LogOutcome::Denied);
-                            }
-                        }
-                    }
+                    handle_voice_command(config, &transcript)?;
                 }
                 Some(WakePipelineEvent::CommandTimedOut) => {
                     write_log(LogEvent::VoiceCommandTimedOut, LogOutcome::Denied);
@@ -424,7 +450,7 @@ mod unix {
                     }
                 }
                 Some(WakePipelineEvent::PossibleBargeIn { transcript }) => {
-                    handle_possible_barge_in(config, &transcript);
+                    confirm_barge(config, &mut pipeline, &transcript, &mut barge_checks);
                 }
                 None => {}
             }
@@ -442,25 +468,93 @@ mod unix {
         Ok(())
     }
 
+    #[cfg(feature = "voice-runtime")]
+    fn handle_voice_command(config: &VoiceConfig, transcript: &str) -> Result<(), DaemonError> {
+        #[cfg(not(feature = "voice-agent"))]
+        let _ = config;
+        if transcript.trim().is_empty() {
+            return Err(DaemonError::new(
+                DaemonErrorKind::Voice,
+                "voice runtime produced an empty command",
+            ));
+        }
+        #[cfg(feature = "voice-agent")]
+        if config
+            .agent_ingress
+            .as_ref()
+            .is_some_and(|agent| agent.resembles_output(transcript))
+        {
+            write_log(LogEvent::VoiceEchoRejected, LogOutcome::Denied);
+            return Ok(());
+        }
+        write_log(LogEvent::VoiceCommandReady, LogOutcome::Succeeded);
+        #[cfg(feature = "voice-agent")]
+        if let Some(agent) = &config.agent_ingress {
+            match agent.submit(transcript) {
+                Ok(oreo_agent::TurnSubmission::Queued) => {
+                    write_log(LogEvent::AgentTurnQueued, LogOutcome::Succeeded);
+                }
+                Ok(oreo_agent::TurnSubmission::InterruptRequested) => {
+                    write_log(LogEvent::AgentTurnInterrupted, LogOutcome::Succeeded);
+                }
+                Err(_) => write_log(LogEvent::AgentTurnRejected, LogOutcome::Denied),
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    fn write_debug_event(event: &str, transcript: Option<&str>) {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "component": "oreo-daemon-debug",
+                "event": event,
+                "transcript": transcript,
+            })
+        );
+    }
+
     #[cfg(feature = "voice-agent")]
-    fn handle_possible_barge_in(config: &VoiceConfig, transcript: &str) {
-        if let Some(agent) = &config.agent_ingress
-            && !agent.resembles_output(transcript)
+    fn confirm_barge(
+        config: &VoiceConfig,
+        pipeline: &mut AmbientVoicePipeline,
+        transcript: &str,
+        confirmations: &mut u8,
+    ) {
+        let Some(agent) = &config.agent_ingress else {
+            *confirmations = 0;
+            return;
+        };
+        if agent.resembles_output(transcript) {
+            *confirmations = 0;
+            return;
+        }
+        *confirmations = confirmations.saturating_add(1);
+        if *confirmations >= 2
             && agent
                 .interrupt_speech()
                 .is_ok_and(|interrupted| interrupted)
         {
+            *confirmations = 0;
+            let _ = pipeline.confirm_barge_in();
             write_log(LogEvent::VoiceBargeIn, LogOutcome::Succeeded);
         }
     }
 
-    #[cfg(not(feature = "voice-agent"))]
-    fn handle_possible_barge_in(_config: &VoiceConfig, _transcript: &str) {}
+    #[cfg(all(feature = "voice-runtime", not(feature = "voice-agent")))]
+    fn confirm_barge(
+        _config: &VoiceConfig,
+        _pipeline: &mut AmbientVoicePipeline,
+        _transcript: &str,
+        _confirmations: &mut u8,
+    ) {
+    }
 
     #[cfg(feature = "voice-agent")]
     fn update_conversation_phase(
         config: &VoiceConfig,
-        pipeline: &mut WakeCommandPipeline,
+        pipeline: &mut AmbientVoicePipeline,
         last_phase: &mut ConversationPhase,
     ) {
         let Some(agent) = &config.agent_ingress else {
@@ -891,6 +985,12 @@ mod unix {
         #[cfg(feature = "voice-agent")]
         SpeechFailed,
         #[cfg(feature = "voice-agent")]
+        SpeechSynthesisFailed,
+        #[cfg(feature = "voice-agent")]
+        SpeechConversionFailed,
+        #[cfg(feature = "voice-agent")]
+        SpeechPlaybackFailed,
+        #[cfg(feature = "voice-agent")]
         SpeechFinished,
         #[cfg(feature = "voice-agent")]
         SpeechGenerating,
@@ -958,6 +1058,12 @@ mod unix {
                 Self::SpeechCancelled => "speech_cancelled",
                 #[cfg(feature = "voice-agent")]
                 Self::SpeechFailed => "speech_failed",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechSynthesisFailed => "speech_synthesis_failed",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechConversionFailed => "speech_conversion_failed",
+                #[cfg(feature = "voice-agent")]
+                Self::SpeechPlaybackFailed => "speech_playback_failed",
                 #[cfg(feature = "voice-agent")]
                 Self::SpeechFinished => "speech_finished",
                 #[cfg(feature = "voice-agent")]
@@ -1065,6 +1171,15 @@ mod unix {
             SpeechRuntimeEvent::Finished => (LogEvent::SpeechFinished, LogOutcome::Succeeded),
             SpeechRuntimeEvent::Cancelled => (LogEvent::SpeechCancelled, LogOutcome::Denied),
             SpeechRuntimeEvent::Failed => (LogEvent::SpeechFailed, LogOutcome::Failed),
+            SpeechRuntimeEvent::SynthesisFailed => {
+                (LogEvent::SpeechSynthesisFailed, LogOutcome::Failed)
+            }
+            SpeechRuntimeEvent::ConversionFailed => {
+                (LogEvent::SpeechConversionFailed, LogOutcome::Failed)
+            }
+            SpeechRuntimeEvent::PlaybackFailed => {
+                (LogEvent::SpeechPlaybackFailed, LogOutcome::Failed)
+            }
         };
         write_log(event, outcome);
     }
@@ -1169,11 +1284,11 @@ mod unix {
                         || env::current_dir().map_err(io_error),
                         |path| Ok(PathBuf::from(path)),
                     )?;
-                let voice = configure_voice_agent(
-                    VoiceConfig::for_repository(&root),
-                    &root,
-                    &config.state_directory,
-                )?;
+                let mut voice = VoiceConfig::for_repository(&root);
+                voice.attention_name = attention_name()?;
+                voice.debug_transcripts =
+                    boolean_environment("OREO_VOICE_DEBUG_TRANSCRIPTS", DaemonErrorKind::Voice)?;
+                let voice = configure_voice_agent(voice, &root, &config.state_directory)?;
                 return run_inner(&config, Some(voice));
             }
             #[cfg(not(feature = "voice-runtime"))]
@@ -1188,13 +1303,34 @@ mod unix {
     }
 
     fn voice_enabled() -> Result<bool, DaemonError> {
-        match env::var("OREO_VOICE_ENABLED") {
+        boolean_environment("OREO_VOICE_ENABLED", DaemonErrorKind::Voice)
+    }
+
+    #[cfg(feature = "voice-runtime")]
+    fn attention_name() -> Result<String, DaemonError> {
+        let value = match env::var("OREO_ATTENTION_NAME") {
+            Err(env::VarError::NotPresent) => return Ok("oreo".to_owned()),
+            Ok(value) => value.trim().to_ascii_lowercase(),
+            Err(env::VarError::NotUnicode(_)) => String::new(),
+        };
+        if value == "oreo" {
+            Ok(value)
+        } else {
+            Err(DaemonError::new(
+                DaemonErrorKind::Voice,
+                "OREO_ATTENTION_NAME must match the installed Oreo acoustic model",
+            ))
+        }
+    }
+
+    fn boolean_environment(name: &str, error_kind: DaemonErrorKind) -> Result<bool, DaemonError> {
+        match env::var(name) {
             Err(env::VarError::NotPresent) => Ok(false),
             Ok(value) if matches!(value.as_str(), "1" | "true") => Ok(true),
             Ok(value) if matches!(value.as_str(), "0" | "false") => Ok(false),
             Ok(_) | Err(env::VarError::NotUnicode(_)) => Err(DaemonError::new(
-                DaemonErrorKind::Voice,
-                "OREO_VOICE_ENABLED must be true, false, 1, or 0",
+                error_kind,
+                "boolean environment setting must be true, false, 1, or 0",
             )),
         }
     }
