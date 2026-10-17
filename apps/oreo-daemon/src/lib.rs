@@ -55,7 +55,9 @@ mod unix {
 
     pub struct VoiceConfig {
         pub repository_root: PathBuf,
+        #[cfg(feature = "voice-runtime")]
         attention_name: String,
+        #[cfg(feature = "voice-runtime")]
         debug_transcripts: bool,
         #[cfg(feature = "voice-agent")]
         agent_config: Option<VoiceAgentConfig>,
@@ -68,7 +70,9 @@ mod unix {
         pub fn for_repository(root: impl AsRef<Path>) -> Self {
             Self {
                 repository_root: root.as_ref().to_path_buf(),
+                #[cfg(feature = "voice-runtime")]
                 attention_name: "oreo".to_owned(),
+                #[cfg(feature = "voice-runtime")]
                 debug_transcripts: false,
                 #[cfg(feature = "voice-agent")]
                 agent_config: None,
@@ -256,6 +260,10 @@ mod unix {
     }
 
     #[cfg(not(feature = "voice-agent"))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "keep the lifecycle API identical across feature configurations"
+    )]
     const fn spawn_voice_agent(
         _voice_config: &mut Option<VoiceConfig>,
     ) -> Result<Option<()>, DaemonError> {
@@ -268,6 +276,10 @@ mod unix {
     }
 
     #[cfg(not(feature = "voice-agent"))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "keep the lifecycle API identical across feature configurations"
+    )]
     const fn join_voice_agent(_agent: Option<()>) -> Result<(), DaemonError> {
         Ok(())
     }
@@ -293,6 +305,10 @@ mod unix {
     }
 
     #[cfg(not(feature = "voice-runtime"))]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "consume the disabled runtime configuration after validating it"
+    )]
     fn spawn_voice(
         _shared: &Arc<SharedState>,
         config: Option<VoiceConfig>,
@@ -318,6 +334,10 @@ mod unix {
     }
 
     #[cfg(not(feature = "voice-runtime"))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "keep the lifecycle API identical across feature configurations"
+    )]
     const fn join_voice(_voice: Option<()>) -> Result<(), DaemonError> {
         Ok(())
     }
