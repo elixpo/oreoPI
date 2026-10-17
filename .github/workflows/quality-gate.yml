@@ -16,7 +16,7 @@ jobs:
     steps:
       # ── Checkout the calling repo ──────────────────────────────────
       - name: Checkout calling repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # ── Install yq for YAML parsing ───────────────────────────────
       - name: Install yq
@@ -67,7 +67,7 @@ jobs:
       # ── Node.js setup (nextjs) ─────────────────────────────────────
       - name: Setup Node.js
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'nextjs'
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ steps.manifest.outputs.node_version }}
           cache: npm
@@ -79,21 +79,21 @@ jobs:
       # ── Python setup ───────────────────────────────────────────────
       - name: Setup Python
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'python'
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
 
       # ── Rust setup ─────────────────────────────────────────────────
       - name: Setup Rust
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'rust'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
       - name: Cache Rust build
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'rust'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
 
       - name: Install Python dependencies
         if: steps.manifest.outputs.exists == 'true' && steps.manifest.outputs.stack == 'python'
